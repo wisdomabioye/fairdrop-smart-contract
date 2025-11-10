@@ -1,5 +1,3 @@
-# Fairdrop Implementation Guide
----
 
 ## Overview
 

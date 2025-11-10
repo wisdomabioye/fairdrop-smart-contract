@@ -28,147 +28,34 @@ Step 1 implements the core auction mechanism without external dependencies:
 
 - **PlaceBid**: Place a bid for a specified quantity at the current price
 
-### Queries
-
-- `auctionParameters`: Get auction configuration
-- `currentPrice`: Get the current price (calculated dynamically)
-- `status`: Get auction status (Scheduled, Active, or Ended)
-- `quantitySold`: Get total quantity sold so far
-- `quantityRemaining`: Get quantity still available
-- `auctionInfo`: Get comprehensive auction information including time until next price decrement
-- `state`: Get complete auction state including participants
-
 ## Building
 
 ```bash
-cd smart-contract/basic-auction
+cd basic-auction
 
 # Build for WASM
 cargo build --release --target wasm32-unknown-unknown
-```
-
-## Testing Locally
-
-### 1. Start a Local Linera Network
-
-```bash
-# From the linera-protocol root directory
-linera net up
-```
-
-### 2. Publish the Application
-
-```bash
-# Navigate to step1-basic-auction directory
-cd smart-contract/basic-auction
-
-# Publish and create an instance of the auction
-linera project publish-and-create \
-  --instantiation-arg '{
-    "owner": "User:...",
-    "start_timestamp": 1234567890000000,
-    "start_price": "1000000",
-    "floor_price": "100000",
-    "decrement_rate": "10000",
-    "decrement_interval": 60,
-    "total_quantity": 1000
-  }'
-```
-
-### 3. Place a Bid
-
-```bash
-linera project run-operation PlaceBid '{"quantity": 100}'
-```
-
-### 4. Query Auction State
-
-```bash
-# Get current price
-linera project query '{
-  currentPrice
-}'
-
-# Get comprehensive auction info
-linera project query '{
-  auctionInfo {
-    owner
-    startTimestamp
-    startPrice
-    floorPrice
-    currentPrice
-    quantitySold
-    quantityRemaining
-    status
-    timeUntilNextDecrement
-  }
-}'
-
-# Get auction status
-linera project query '{
-  status
-}'
 ```
 
 ## Example Scenario
 
 ### Create an Auction
 
-Auction for 1,000 tokens:
-- Starts at $1.00 per token
-- Decreases by $0.01 every 60 seconds
-- Floor price of $0.10
+Auction for 250,000 tokens:
+- Starts at 100 per token
+- Decreases by 1 every 600 seconds
+- Floor price of 1
 
 ```bash
 linera project publish-and-create \
-  --instantiation-arg '{
-    "owner": "User:7136460f0c87ae46f966f898d494c4b40c4ae8c527f4d1c0b1fa0f7cff91d20f",
-    "start_timestamp": 1735689600000000,
-    "start_price": "1000000",
-    "floor_price": "100000",
-    "decrement_rate": "10000",
-    "decrement_interval": 60,
-    "total_quantity": 1000
+  --json-argument '{
+  "start_timestamp": 1762598125457000,
+  "start_price": "100.",
+  "floor_price": "1.",
+  "decrement_rate": "1.",
+  "decrement_interval": 600,
+  "total_quantity": 250000
   }'
-```
-
-### Place Bids
-
-User A buys 300 tokens:
-```bash
-linera project run-operation PlaceBid '{"quantity": 300}'
-```
-
-User B buys 500 tokens:
-```bash
-linera project run-operation PlaceBid '{"quantity": 500}'
-```
-
-### Query Current State
-
-```bash
-linera project query '{
-  auctionInfo {
-    currentPrice
-    quantitySold
-    quantityRemaining
-    status
-    timeUntilNextDecrement
-  }
-}'
-```
-
-Expected output:
-```json
-{
-  "auctionInfo": {
-    "currentPrice": "980000",
-    "quantitySold": 800,
-    "quantityRemaining": 200,
-    "status": "Active",
-    "timeUntilNextDecrement": 45
-  }
-}
 ```
 
 ## Price Calculation
@@ -239,7 +126,7 @@ basic-auction/
 
 After completing Stage 1:
 
-1. **Tested thoroughly** with different auction parameters
+1. **Test thoroughly** with different auction parameters
 2. **Experiment** with price curves (different decrement rates and intervals)
 3. **Query** the state to understand how Linera views work
 4. **Move to Stage 2** to add actual token payments
@@ -259,8 +146,4 @@ By completing Stage 1, we have:
 
 For questions or issues:
 - Email: xpldevelopers@gmail.com
-- Documentation: See `FAIRDROP_IMPLEMENTATION_GUIDE.md` in the repository root
-
 ---
-
-**Next**: Proceed to Step 2 to add payment token integration!
