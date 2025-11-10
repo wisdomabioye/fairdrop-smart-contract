@@ -1,0 +1,439 @@
+// Copyright (c) Fairdrop Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#![cfg_attr(target_arch = "wasm32", no_main)]
+
+mod state;
+
+use fairdrop_basic::{AuctionParameters, FairdropAbi, InstantiationArgument, Message, Operation};
+use linera_sdk::{
+    Contract, ContractRuntime, linera_base_types::{Amount, WithContractAbi}, views::{RootView, View}
+};
+use self::state::{AuctionState, AuctionStatus, ParticipantInfo};
+
+pub struct FairdropContract {
+    state: AuctionState,
+    runtime: ContractRuntime<Self>,
+}
+
+linera_sdk::contract!(FairdropContract);
+
+impl WithContractAbi for FairdropContract {
+    type Abi = FairdropAbi;
+}
+
+impl Contract for FairdropContract {
+    type Message = Message;
+    type InstantiationArgument = InstantiationArgument;
+    type Parameters = (); // No parameters in Stage 1 (no token integration yet)
+    type EventValue = ();
+
+    async fn load(runtime: ContractRuntime<Self>) -> Self {
+        let state = AuctionState::load(runtime.root_view_storage_context())
+            .await
+            .expect("Failed to load state");
+        FairdropContract { state, runtime }
+    }
+
+    async fn instantiate(&mut self, argument: InstantiationArgument) {
+        // Validate auction parameters
+        assert!(
+            argument.start_price > argument.floor_price,
+            "Start price must be greater than floor price"
+        );
+        assert!(
+            argument.decrement_rate > Amount::ZERO,
+            "Decrement rate must be greater than zero"
+        );
+        assert!(
+            argument.decrement_interval > 0,
+            "Decrement interval must be greater than zero"
+        );
+        assert!(
+            argument.total_quantity > 0,
+            "Total quantity must be greater than zero"
+        );
+
+        // Get the owner from the authenticated caller
+        let owner = self
+            .runtime
+            .authenticated_signer()
+            .expect("Instantiation must be authenticated");
+
+        // Create the auction parameters with the owner
+        let params = AuctionParameters {
+            owner,
+            start_timestamp: argument.start_timestamp,
+            start_price: argument.start_price,
+            floor_price: argument.floor_price,
+            decrement_rate: argument.decrement_rate,
+            decrement_interval: argument.decrement_interval,
+            total_quantity: argument.total_quantity,
+        };
+
+        // Determine initial status based on start time
+        let current_time = self.runtime.system_time();
+        let status = if params.start_timestamp > current_time {
+            AuctionStatus::Scheduled
+        } else {
+            AuctionStatus::Active
+        };
+
+        // Store parameters and initialize state
+        self.state.parameters.set(Some(params));
+        self.state.status.set(status);
+        self.state.quantity_sold.set(0);
+    }
+
+    async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
+        match operation {
+            Operation::PlaceBid { quantity } => {
+                self.execute_place_bid(quantity).await;
+            },
+        }
+    }
+
+    async fn execute_message(&mut self, _message: Message) {
+        panic!("No messages are supported in Stage 1");
+    }
+
+    async fn store(mut self) {
+        self.state.save().await.expect("Failed to save state");
+    }
+}
+
+impl FairdropContract {
+    /// Get auction parameters from state
+    fn parameters(&self) -> &AuctionParameters {
+        self.state
+            .parameters
+            .get()
+            .as_ref()
+            .expect("Auction not instantiated yet")
+    }
+
+    /// Executes a bid placement operation
+    async fn execute_place_bid(&mut self, quantity: u64) {
+        // Verify bidder is authenticated
+        let bidder = self
+            .runtime
+            .authenticated_signer()
+            .expect("Bid must be authenticated");
+
+        // Check if auction has started
+        let current_time = self.runtime.system_time();
+        let start_time = self.parameters().start_timestamp;
+        assert!(
+            current_time >= start_time,
+            "Auction has not started yet. Starts at: {:?}",
+            start_time
+        );
+
+        // Update status if needed (from Scheduled to Active)
+        if *self.state.status.get() == AuctionStatus::Scheduled {
+            self.state.status.set(AuctionStatus::Active);
+        }
+
+        // Verify auction is active
+        assert!(
+            self.state.status.get().is_active(),
+            "Auction is not active"
+        );
+
+        // Check quantity availability
+        let quantity_sold = *self.state.quantity_sold.get();
+        let total_quantity = self.parameters().total_quantity;
+        assert!(
+            quantity > 0,
+            "Bid quantity must be greater than zero"
+        );
+        assert!(
+            quantity_sold + quantity <= total_quantity,
+            "Insufficient quantity available. Requested: {}, Available: {}",
+            quantity,
+            total_quantity - quantity_sold
+        );
+
+        // Calculate current price (for informational purposes in Stage 1)
+        let _current_price = self.calculate_current_price();
+
+        // Record the bid
+        let participant_info = ParticipantInfo {
+            quantity,
+            bid_timestamp: current_time,
+        };
+
+        // Update or add participant info
+        let existing = self.state.participants.get(&bidder).await
+            .expect("Failed to read participant info");
+
+        if let Some(mut existing_info) = existing {
+            // Update existing bid
+            existing_info.quantity += quantity;
+            existing_info.bid_timestamp = current_time;
+            self.state.participants.insert(&bidder, existing_info)
+                .expect("Failed to update participant");
+        } else {
+            // New participant
+            self.state.participants.insert(&bidder, participant_info)
+                .expect("Failed to insert participant");
+        }
+
+        // Update total quantity sold
+        let new_quantity_sold = quantity_sold + quantity;
+        self.state.quantity_sold.set(new_quantity_sold);
+
+        // Check if auction should end (sold out or floor price reached)
+        if new_quantity_sold >= total_quantity {
+            self.state.status.set(AuctionStatus::Ended);
+        }
+    }
+
+    /// Calculates the current price based on elapsed time since auction start
+    fn calculate_current_price(&mut self) -> Amount {
+        // Clone params to avoid borrow conflicts
+        let params = *self.parameters();
+        let current_time = self.runtime.system_time();
+
+        // If auction hasn't started, return start price
+        if current_time < params.start_timestamp {
+            return params.start_price;
+        }
+
+        // Calculate time elapsed since start
+        let elapsed = current_time.duration_since(params.start_timestamp);
+        let elapsed_secs = elapsed.as_secs();
+
+        // Calculate number of intervals that have passed
+        let intervals_passed = elapsed_secs / params.decrement_interval;
+
+        // Calculate total decrement
+        let total_decrement = params
+            .decrement_rate
+            .saturating_mul(intervals_passed as u128);
+
+        // Calculate current price, ensuring it doesn't go below floor price
+        params
+            .start_price
+            .saturating_sub(total_decrement)
+            .max(params.floor_price)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use linera_sdk::linera_base_types::{AccountOwner, Amount, TimeDelta, Timestamp};
+    use std::str::FromStr;
+
+    /// Helper function to test price calculation logic
+    fn calculate_price_at_time(
+        start_price: Amount,
+        floor_price: Amount,
+        decrement_rate: Amount,
+        decrement_interval: u64,
+        start_timestamp: Timestamp,
+        current_timestamp: Timestamp,
+    ) -> Amount {
+        if current_timestamp < start_timestamp {
+            return start_price;
+        }
+
+        let elapsed = current_timestamp.duration_since(start_timestamp);
+        let elapsed_secs = elapsed.as_secs();
+        let intervals_passed = elapsed_secs / decrement_interval;
+        let total_decrement = decrement_rate.saturating_mul(intervals_passed as u128);
+
+        start_price
+            .saturating_sub(total_decrement)
+            .max(floor_price)
+    }
+
+    #[test]
+    fn test_price_calculation_at_start() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(1);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(1000000);
+
+        // At exact start time
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            start_time,
+        );
+        assert_eq!(price, start_price);
+    }
+
+    #[test]
+    fn test_price_calculation_before_start() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(1);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(2000000);
+        let current_time = Timestamp::from(1000000);
+
+        // Before start time
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            current_time,
+        );
+        assert_eq!(price, start_price);
+    }
+
+    #[test]
+    fn test_price_calculation_after_one_interval() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(1);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(1000000);
+        let current_time = start_time.saturating_add(TimeDelta::from_secs(60));
+
+        // After one interval (60 seconds)
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            current_time,
+        );
+        assert_eq!(price, Amount::from_tokens(99)); // 100 - 1
+    }
+
+    #[test]
+    fn test_price_calculation_after_multiple_intervals() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(1);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(1000000);
+        let current_time = start_time.saturating_add(TimeDelta::from_secs(300)); // 5 intervals
+
+        // After 5 intervals (300 seconds)
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            current_time,
+        );
+        assert_eq!(price, Amount::from_tokens(95)); // 100 - 5
+    }
+
+    #[test]
+    fn test_price_calculation_reaches_floor() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(1);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(1000000);
+        // After 100 intervals, price should be at floor
+        let current_time = start_time.saturating_add(TimeDelta::from_secs(6000)); // 100 intervals
+
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            current_time,
+        );
+        assert_eq!(price, floor_price); // Should not go below floor
+    }
+
+    #[test]
+    fn test_price_calculation_below_floor() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(2);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(1000000);
+        // After 50 intervals with rate of 2, price would be 0 without floor
+        let current_time = start_time.saturating_add(TimeDelta::from_secs(3000)); // 50 intervals
+
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            current_time,
+        );
+        assert_eq!(price, floor_price); // Should stop at floor, not go below
+    }
+
+    #[test]
+    fn test_price_calculation_partial_interval() {
+        let start_price = Amount::from_tokens(100);
+        let floor_price = Amount::from_tokens(10);
+        let decrement_rate = Amount::from_tokens(1);
+        let decrement_interval = 60;
+        let start_time = Timestamp::from(1000000);
+        // 90 seconds = 1.5 intervals, but should only count 1 complete interval
+        let current_time = start_time.saturating_add(TimeDelta::from_secs(90));
+
+        let price = calculate_price_at_time(
+            start_price,
+            floor_price,
+            decrement_rate,
+            decrement_interval,
+            start_time,
+            current_time,
+        );
+        assert_eq!(price, Amount::from_tokens(99)); // 100 - 1 (only 1 complete interval)
+    }
+
+    #[test]
+    fn test_instantiation_argument_validation() {
+        // These tests verify the assertions in instantiate()
+        // Valid configuration
+        let valid_arg: InstantiationArgument = InstantiationArgument {
+            start_timestamp: Timestamp::from(1000000),
+            start_price: Amount::from_tokens(100),
+            floor_price: Amount::from_tokens(10),
+            decrement_rate: Amount::from_tokens(1),
+            decrement_interval: 60,
+            total_quantity: 1000,
+        };
+
+        // Verify valid configuration doesn't panic
+        assert!(valid_arg.start_price > valid_arg.floor_price);
+        assert!(valid_arg.decrement_rate > Amount::ZERO);
+        assert!(valid_arg.decrement_interval > 0);
+        assert!(valid_arg.total_quantity > 0);
+    }
+
+    #[test]
+    fn test_auction_parameters_fields() {
+        let owner = AccountOwner::from_str("owner").unwrap();
+        let params = AuctionParameters {
+            owner,
+            start_timestamp: Timestamp::from(1000000),
+            start_price: Amount::from_tokens(100),
+            floor_price: Amount::from_tokens(10),
+            decrement_rate: Amount::from_tokens(1),
+            decrement_interval: 60,
+            total_quantity: 1000,
+        };
+
+        // Test direct field access
+        assert_eq!(params.start_timestamp, Timestamp::from(1000000));
+        assert_eq!(params.start_price, Amount::from_tokens(100));
+        assert_eq!(params.floor_price, Amount::from_tokens(10));
+        assert_eq!(params.decrement_rate, Amount::from_tokens(1));
+        assert_eq!(params.owner, owner);
+    }
+}

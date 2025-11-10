@@ -1,0 +1,8 @@
+{
+  "start_timestamp": 1762598125457000,
+  "start_price": "100.",
+  "floor_price": "1.",
+  "decrement_rate": "1.",
+  "decrement_interval": 600,
+  "total_quantity": 250000
+}

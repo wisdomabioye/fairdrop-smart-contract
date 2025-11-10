@@ -1,0 +1,35 @@
+[package]
+name = "fairdrop-basic-auction"
+version = "0.1.0"
+authors = ["Fairdrop <xpldevelopers@gmail.com>"]
+edition = "2021"
+description = "Fairdrop: Basic Auction MVP - Core auction logic without external dependencies"
+
+[profile.release]
+  opt-level = "s"  # Optimize for size
+  lto = true
+  codegen-units = 1
+
+[package.metadata.cargo-all-features]
+denylist = ["simd"]
+
+[dependencies]
+async-graphql = "7.0"
+linera-sdk = "0.15.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+linera-sdk = { version = "0.15.5", features = ["test", "wasmer"] }
+tokio = { version = "1.0", features = ["rt", "macros"] }
+
+[lib]
+name = "fairdrop_basic"
+
+[[bin]]
+name = "fairdrop_basic_contract"
+path = "src/contract.rs"
+
+[[bin]]
+name = "fairdrop_basic_service"
+path = "src/service.rs"
