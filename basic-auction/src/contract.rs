@@ -36,7 +36,6 @@ impl Contract for FairdropContract {
     }
 
     async fn instantiate(&mut self, argument: InstantiationArgument) {
-        // Validate auction parameters
         assert!(
             argument.start_price > argument.floor_price,
             "Start price must be greater than floor price"
@@ -53,6 +52,9 @@ impl Contract for FairdropContract {
             argument.total_quantity > 0,
             "Total quantity must be greater than zero"
         );
+
+        // Validate that the application parameters were configured correctly.
+        self.runtime.application_parameters();
 
         // Get the owner from the authenticated caller
         let owner = self
@@ -72,7 +74,7 @@ impl Contract for FairdropContract {
         };
 
         // Determine initial status based on start time
-        let current_time = self.runtime.system_time();
+        let current_time: linera_sdk::linera_base_types::Timestamp = self.runtime.system_time();
         let status = if params.start_timestamp > current_time {
             AuctionStatus::Scheduled
         } else {
@@ -103,15 +105,6 @@ impl Contract for FairdropContract {
 }
 
 impl FairdropContract {
-    /// Get auction parameters from state
-    fn parameters(&self) -> &AuctionParameters {
-        self.state
-            .parameters
-            .get()
-            .as_ref()
-            .expect("Auction not instantiated yet")
-    }
-
     /// Executes a bid placement operation
     async fn execute_place_bid(&mut self, quantity: u64) {
         // Verify bidder is authenticated
@@ -191,7 +184,7 @@ impl FairdropContract {
 
     /// Calculates the current price based on elapsed time since auction start
     fn calculate_current_price(&mut self) -> Amount {
-        // Clone params to avoid borrow conflicts
+        // Copy params to avoid borrow conflicts (AuctionParameters is Copy)
         let params = *self.parameters();
         let current_time = self.runtime.system_time();
 
@@ -218,14 +211,23 @@ impl FairdropContract {
             .saturating_sub(total_decrement)
             .max(params.floor_price)
     }
+
+    /// Helper method to get auction parameters
+    fn parameters(&self) -> &AuctionParameters {
+        self.state
+            .parameters
+            .get()
+            .as_ref()
+            .expect("Application not instantiated. Parameters are None. Make sure instantiate() was called first.")
+    }
+
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use linera_sdk::linera_base_types::{AccountOwner, Amount, TimeDelta, Timestamp};
-    use std::str::FromStr;
+    use linera_sdk::linera_base_types::{AccountOwner, Amount, CryptoHash, TimeDelta, Timestamp};
 
     /// Helper function to test price calculation logic
     fn calculate_price_at_time(
@@ -399,8 +401,10 @@ mod tests {
     #[test]
     fn test_instantiation_argument_validation() {
         // These tests verify the assertions in instantiate()
-        // Valid configuration
-        let valid_arg: InstantiationArgument = InstantiationArgument {
+        // Valid configuration (owner will be set during instantiation from authenticated caller)
+        use fairdrop_basic::InstantiationArgument;
+
+        let valid_arg = InstantiationArgument {
             start_timestamp: Timestamp::from(1000000),
             start_price: Amount::from_tokens(100),
             floor_price: Amount::from_tokens(10),
@@ -418,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_auction_parameters_fields() {
-        let owner = AccountOwner::from_str("owner").unwrap();
+        let owner = AccountOwner::from(CryptoHash::test_hash("owner"));
         let params = AuctionParameters {
             owner,
             start_timestamp: Timestamp::from(1000000),
@@ -430,10 +434,12 @@ mod tests {
         };
 
         // Test direct field access
+        assert_eq!(params.owner, owner);
         assert_eq!(params.start_timestamp, Timestamp::from(1000000));
         assert_eq!(params.start_price, Amount::from_tokens(100));
         assert_eq!(params.floor_price, Amount::from_tokens(10));
         assert_eq!(params.decrement_rate, Amount::from_tokens(1));
-        assert_eq!(params.owner, owner);
+        assert_eq!(params.decrement_interval, 60);
+        assert_eq!(params.total_quantity, 1000);
     }
 }

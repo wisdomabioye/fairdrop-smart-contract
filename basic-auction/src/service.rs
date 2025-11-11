@@ -7,15 +7,15 @@ mod state;
 
 use std::sync::Arc;
 
-use async_graphql::{EmptySubscription, Object, Request, Response, Schema, SimpleObject};
-use fairdrop_basic::{FairdropAbi, AuctionParameters, Operation};
+use async_graphql::{ComplexObject, Context, EmptySubscription, Request, Response, Schema};
+use fairdrop_basic::{FairdropAbi, Operation};
 use linera_sdk::{
-    graphql::GraphQLMutationRoot,
-    linera_base_types::{Amount, Timestamp, WithServiceAbi},
+    graphql::GraphQLMutationRoot as _,
+    linera_base_types::{Amount, WithServiceAbi},
     views::View,
     Service, ServiceRuntime,
 };
-use state::{AuctionState, AuctionStatus};
+use state::{AuctionInfo, AuctionState};
 
 pub struct FairdropService {
     state: Arc<AuctionState>,
@@ -43,10 +43,7 @@ impl Service for FairdropService {
 
     async fn handle_query(&self, request: Request) -> Response {
         let schema = Schema::build(
-            QueryRoot {
-                state: self.state.clone(),
-                runtime: self.runtime.clone(),
-            },
+            self.state.clone(),
             Operation::mutation_root(self.runtime.clone()),
             EmptySubscription,
         )
@@ -55,26 +52,18 @@ impl Service for FairdropService {
     }
 }
 
-struct QueryRoot {
-    state: Arc<AuctionState>,
-    runtime: Arc<ServiceRuntime<FairdropService>>,
-}
-
-#[Object]
-impl QueryRoot {
-    /// Get the auction configuration parameters
-    async fn auction_parameters(&self) -> Option<AuctionParameters> {
-        self.state.parameters.get().clone()
-    }
-
+/// GraphQL query methods for AuctionState
+#[ComplexObject]
+impl AuctionState {
     /// Get the current price based on elapsed time
-    async fn current_price(&self) -> Amount {
-        let params = self.state.parameters.get().expect("Auction not instantiated");
-        let current_time = self.runtime.system_time();
+    async fn current_price(&self, ctx: &Context<'_>) -> Option<Amount> {
+        let params = self.parameters.get().as_ref()?;
+        let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();
+        let current_time = runtime.system_time();
 
         // If auction hasn't started, return start price
         if current_time < params.start_timestamp {
-            return params.start_price;
+            return Some(params.start_price);
         }
 
         // Calculate time elapsed since start
@@ -90,33 +79,24 @@ impl QueryRoot {
             .saturating_mul(intervals_passed as u128);
 
         // Calculate current price, ensuring it doesn't go below floor price
-        params
+        Some(params
             .start_price
             .saturating_sub(total_decrement)
-            .max(params.floor_price)
-    }
-
-    /// Get the current auction status
-    async fn status(&self) -> AuctionStatus {
-        *self.state.status.get()
-    }
-
-    /// Get the total quantity sold so far
-    async fn quantity_sold(&self) -> u64 {
-        *self.state.quantity_sold.get()
+            .max(params.floor_price))
     }
 
     /// Get the remaining quantity available for sale
-    async fn quantity_remaining(&self) -> u64 {
-        let params = self.state.parameters.get().expect("Auction not instantiated");
-        let sold = *self.state.quantity_sold.get();
-        params.total_quantity.saturating_sub(sold)
+    async fn quantity_remaining(&self) -> Option<u64> {
+        let params = self.parameters.get().as_ref()?;
+        let sold = *self.quantity_sold.get();
+        Some(params.total_quantity.saturating_sub(sold))
     }
 
     /// Get information about the auction state
-    async fn auction_info(&self) -> AuctionInfo {
-        let params = self.state.parameters.get().expect("Auction not instantiated");
-        let current_time = self.runtime.system_time();
+    async fn auction_info(&self, ctx: &Context<'_>) -> Option<AuctionInfo> {
+        let params = self.parameters.get().as_ref()?;
+        let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();
+        let current_time = runtime.system_time();
 
         // Calculate current price
         let current_price = if current_time < params.start_timestamp {
@@ -144,7 +124,7 @@ impl QueryRoot {
             None
         };
 
-        AuctionInfo {
+        Some(AuctionInfo {
             owner: params.owner,
             start_timestamp: params.start_timestamp,
             start_price: params.start_price,
@@ -152,35 +132,13 @@ impl QueryRoot {
             decrement_rate: params.decrement_rate,
             decrement_interval: params.decrement_interval,
             total_quantity: params.total_quantity,
-            quantity_sold: *self.state.quantity_sold.get(),
-            quantity_remaining: params.total_quantity.saturating_sub(*self.state.quantity_sold.get()),
+            quantity_sold: *self.quantity_sold.get(),
+            quantity_remaining: params.total_quantity.saturating_sub(*self.quantity_sold.get()),
             current_price,
-            status: *self.state.status.get(),
+            status: *self.status.get(),
             current_time,
             time_until_next_decrement,
-        }
+        })
     }
-
-    /// Get the complete auction state (for advanced queries)
-    async fn state(&self) -> &AuctionState {
-        &self.state
-    }
-}
-
-/// Comprehensive auction information
-#[derive(SimpleObject)]
-struct AuctionInfo {
-    owner: linera_sdk::linera_base_types::AccountOwner,
-    start_timestamp: Timestamp,
-    start_price: Amount,
-    floor_price: Amount,
-    decrement_rate: Amount,
-    decrement_interval: u64,
-    total_quantity: u64,
-    quantity_sold: u64,
-    quantity_remaining: u64,
-    current_price: Amount,
-    status: AuctionStatus,
-    current_time: Timestamp,
-    time_until_next_decrement: Option<u64>,
+    
 }

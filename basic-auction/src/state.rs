@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_graphql::{scalar, SimpleObject};
-use crate::AuctionParameters;
 use linera_sdk::{
-    linera_base_types::{AccountOwner, Timestamp},
+    linera_base_types::{AccountOwner, Amount, Timestamp},
     views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
 };
 use serde::{Deserialize, Serialize};
 
+use fairdrop_basic::AuctionParameters;
+   
 /// Information about a participant's bid in the auction
 #[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
 pub struct ParticipantInfo {
@@ -35,23 +36,6 @@ pub enum AuctionStatus {
 
 scalar!(AuctionStatus);
 
-/// The Fairdrop auction state
-#[derive(RootView, SimpleObject)]
-#[view(context = ViewStorageContext)]
-pub struct AuctionState {
-    /// Auction configuration parameters (stored at instantiation)
-    pub parameters: RegisterView<Option<AuctionParameters>>,
-
-    /// Current status of the auction
-    pub status: RegisterView<AuctionStatus>,
-
-    /// Mapping of participants (AccountOwner) to their bid information
-    pub participants: MapView<AccountOwner, ParticipantInfo>,
-
-    /// Total quantity sold so far
-    pub quantity_sold: RegisterView<u64>,
-}
-
 impl AuctionStatus {
     /// Returns `true` if the auction is active and accepting bids
     pub fn is_active(&self) -> bool {
@@ -69,6 +53,40 @@ impl AuctionStatus {
     }
 }
 
+/// The Fairdrop auction state
+#[derive(RootView, SimpleObject)]
+#[view(context = ViewStorageContext)]
+pub struct AuctionState {
+    /// Auction configuration parameters (stored at instantiation)
+    pub parameters: RegisterView<Option<AuctionParameters>>,
+
+    /// Current status of the auction
+    pub status: RegisterView<AuctionStatus>,
+
+    /// Mapping of participants (AccountOwner) to their bid information
+    pub participants: MapView<AccountOwner, ParticipantInfo>,
+
+    /// Total quantity sold so far
+    pub quantity_sold: RegisterView<u64>,
+}
+
+/// Comprehensive auction information
+#[derive(SimpleObject)]
+pub struct AuctionInfo {
+    pub owner: AccountOwner,
+    pub start_timestamp: Timestamp,
+    pub start_price: Amount,
+    pub floor_price: Amount,
+    pub decrement_rate: Amount,
+    pub decrement_interval: u64,
+    pub total_quantity: u64,
+    pub quantity_sold: u64,
+    pub quantity_remaining: u64,
+    pub current_price: Amount,
+    pub status: AuctionStatus,
+    pub current_time: Timestamp,
+    pub time_until_next_decrement: Option<u64>,
+}
 
 #[cfg(test)]
 mod tests {
