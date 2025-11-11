@@ -1,5 +1,7 @@
 # Fairdrop Step 1: Basic Auction MVP
 
+### [Actively in Development]
+
 This is the first implementation stage of the Fairdrop auction system on Linera blockchain.
 
 ## Overview
