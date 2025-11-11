@@ -56,7 +56,10 @@ impl Service for FairdropService {
 #[ComplexObject]
 impl AuctionState {
     /// Get the current price based on elapsed time
+    /// Returns None if the auction is not instantiated on this chain
     async fn current_price(&self, ctx: &Context<'_>) -> Option<Amount> {
+        // If parameters are not set, this chain doesn't have the auction state
+        // User should query the creator chain instead
         let params = self.parameters.get().as_ref()?;
         let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();
         let current_time = runtime.system_time();
@@ -92,7 +95,14 @@ impl AuctionState {
         Some(params.total_quantity.saturating_sub(sold))
     }
 
+    /// Check if this chain has the auction state
+    /// Returns true if the auction was instantiated on this chain
+    async fn has_auction_state(&self) -> bool {
+        self.parameters.get().is_some()
+    }
+
     /// Get information about the auction state
+    /// Returns None if the auction is not instantiated on this chain
     async fn auction_info(&self, ctx: &Context<'_>) -> Option<AuctionInfo> {
         let params = self.parameters.get().as_ref()?;
         let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();

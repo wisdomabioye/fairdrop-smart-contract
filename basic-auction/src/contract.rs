@@ -7,7 +7,7 @@ mod state;
 
 use fairdrop_basic::{AuctionParameters, FairdropAbi, InstantiationArgument, Message, Operation};
 use linera_sdk::{
-    Contract, ContractRuntime, linera_base_types::{Amount, WithContractAbi}, views::{RootView, View}
+    Contract, ContractRuntime, linera_base_types::{AccountOwner, Amount, WithContractAbi}, views::{RootView, View}
 };
 use self::state::{AuctionState, AuctionStatus, ParticipantInfo};
 
@@ -90,13 +90,47 @@ impl Contract for FairdropContract {
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
         match operation {
             Operation::PlaceBid { quantity } => {
-                self.execute_place_bid(quantity).await;
+                let bidder = self
+                    .runtime
+                    .authenticated_signer()
+                    .expect("Bid must be authenticated");
+
+                // If we're on the creator chain, execute directly
+                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
+                    self.execute_place_bid_internal(bidder, quantity).await;
+                } else {
+                    // Otherwise, send a message to the creator chain
+                    let message = Message::PlaceBid { bidder, quantity };
+                    self.runtime
+                        .prepare_message(message)
+                        .with_authentication()
+                        .send_to(self.runtime.application_creator_chain_id());
+                }
             },
         }
     }
 
-    async fn execute_message(&mut self, _message: Message) {
-        panic!("No messages are supported in Stage 1");
+    async fn execute_message(&mut self, message: Message) {
+        match message {
+            Message::PlaceBid { bidder, quantity } => {
+                // Messages are only sent to the creator chain, so we should be on it
+                // But let's verify just in case
+                if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
+                    panic!(
+                        "PlaceBid message received on wrong chain. Current: {:?}, Creator: {:?}",
+                        self.runtime.chain_id(),
+                        self.runtime.application_creator_chain_id()
+                    );
+                }
+
+                // Verify the message authentication
+                self.runtime
+                    .check_account_permission(bidder)
+                    .expect("Permission required for placing bid");
+
+                self.execute_place_bid_internal(bidder, quantity).await;
+            }
+        }
     }
 
     async fn store(mut self) {
@@ -105,13 +139,8 @@ impl Contract for FairdropContract {
 }
 
 impl FairdropContract {
-    /// Executes a bid placement operation
-    async fn execute_place_bid(&mut self, quantity: u64) {
-        // Verify bidder is authenticated
-        let bidder = self
-            .runtime
-            .authenticated_signer()
-            .expect("Bid must be authenticated");
+    /// Executes a bid placement operation (internal - bidder already authenticated)
+    async fn execute_place_bid_internal(&mut self, bidder: AccountOwner, quantity: u64) {
 
         // Check if auction has started
         let current_time = self.runtime.system_time();

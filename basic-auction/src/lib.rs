@@ -90,10 +90,14 @@ pub enum Operation {
     }
 }
 
-/// Messages for cross-chain communication (not used in Stage 1)
+/// Messages for cross-chain communication
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Message {
-    /// Placeholder variant for Stage 1 (will be replaced in Stage 4)
-    #[doc(hidden)]
-    _Placeholder,
+    /// Place a bid from another chain - forwarded to the auction creator chain
+    PlaceBid {
+        /// The bidder placing the bid
+        bidder: AccountOwner,
+        /// Quantity of units to purchase
+        quantity: u64,
+    },
 }
