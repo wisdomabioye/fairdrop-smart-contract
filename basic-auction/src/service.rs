@@ -7,7 +7,7 @@ mod state;
 
 use std::sync::Arc;
 
-use async_graphql::{ComplexObject, Context, EmptySubscription, Request, Response, Schema};
+use async_graphql::{Context, EmptySubscription, Object, Request, Response, Schema};
 use fairdrop_basic::{FairdropAbi, Operation};
 use linera_sdk::{
     graphql::GraphQLMutationRoot as _,
@@ -20,6 +20,21 @@ use state::{AuctionInfo, AuctionState};
 pub struct FairdropService {
     state: Arc<AuctionState>,
     runtime: Arc<ServiceRuntime<Self>>,
+}
+
+/// Information about where the auction is located
+#[derive(async_graphql::SimpleObject)]
+pub struct ChainInfo {
+    /// The current chain ID
+    pub current_chain_id: String,
+    /// The chain ID where the auction was created
+    pub creator_chain_id: String,
+    /// Whether this chain has the auction state
+    pub has_state: bool,
+}
+
+struct QueryRoot {
+    auction_state: Arc<AuctionState>,
 }
 
 linera_sdk::service!(FairdropService);
@@ -42,25 +57,29 @@ impl Service for FairdropService {
     }
 
     async fn handle_query(&self, request: Request) -> Response {
+        let runtime = self.runtime.clone();
         let schema = Schema::build(
-            self.state.clone(),
+            QueryRoot {
+                auction_state: self.state.clone(),
+            },
             Operation::mutation_root(self.runtime.clone()),
             EmptySubscription,
         )
+        .data(runtime)
         .finish();
         schema.execute(request).await
     }
 }
 
-/// GraphQL query methods for AuctionState
-#[ComplexObject]
-impl AuctionState {
+/// GraphQL query methods
+#[Object]
+impl QueryRoot {
     /// Get the current price based on elapsed time
     /// Returns None if the auction is not instantiated on this chain
     async fn current_price(&self, ctx: &Context<'_>) -> Option<Amount> {
         // If parameters are not set, this chain doesn't have the auction state
         // User should query the creator chain instead
-        let params = self.parameters.get().as_ref()?;
+        let params = self.auction_state.parameters.get().as_ref()?;
         let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();
         let current_time = runtime.system_time();
 
@@ -90,21 +109,43 @@ impl AuctionState {
 
     /// Get the remaining quantity available for sale
     async fn quantity_remaining(&self) -> Option<u64> {
-        let params = self.parameters.get().as_ref()?;
-        let sold = *self.quantity_sold.get();
+        let params = self.auction_state.parameters.get().as_ref()?;
+        let sold = *self.auction_state.quantity_sold.get();
         Some(params.total_quantity.saturating_sub(sold))
     }
 
     /// Check if this chain has the auction state
     /// Returns true if the auction was instantiated on this chain
     async fn has_auction_state(&self) -> bool {
-        self.parameters.get().is_some()
+        self.auction_state.parameters.get().is_some()
+    }
+
+    /// Get information about which chain has the auction state
+    /// Useful for directing queries to the correct chain
+    async fn chain_info(&self, ctx: &Context<'_>) -> ChainInfo {
+        let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();
+        ChainInfo {
+            current_chain_id: runtime.chain_id().to_string(),
+            creator_chain_id: runtime.application_creator_chain_id().to_string(),
+            has_state: self.auction_state.parameters.get().is_some(),
+        }
+    }
+
+    /// Get cached auction state from subscribed updates
+    /// This is available on non-creator chains that have subscribed to auction events
+    /// Returns None if this chain hasn't subscribed or received any updates yet
+    async fn cached_auction_state(&self) -> Option<state::CachedAuctionState> {
+        self.auction_state.cached_state.get().clone()
     }
 
     /// Get information about the auction state
     /// Returns None if the auction is not instantiated on this chain
+    ///
+    /// NOTE: This query only works on the creator chain.
+    /// For non-creator chains, use `cached_auction_state()` if you've subscribed,
+    /// or query the creator chain directly (find it via `chain_info()`).
     async fn auction_info(&self, ctx: &Context<'_>) -> Option<AuctionInfo> {
-        let params = self.parameters.get().as_ref()?;
+        let params = self.auction_state.parameters.get().as_ref()?;
         let runtime = ctx.data::<Arc<ServiceRuntime<FairdropService>>>().unwrap();
         let current_time = runtime.system_time();
 
@@ -142,13 +183,12 @@ impl AuctionState {
             decrement_rate: params.decrement_rate,
             decrement_interval: params.decrement_interval,
             total_quantity: params.total_quantity,
-            quantity_sold: *self.quantity_sold.get(),
-            quantity_remaining: params.total_quantity.saturating_sub(*self.quantity_sold.get()),
+            quantity_sold: *self.auction_state.quantity_sold.get(),
+            quantity_remaining: params.total_quantity.saturating_sub(*self.auction_state.quantity_sold.get()),
             current_price,
-            status: *self.status.get(),
+            status: *self.auction_state.status.get(),
             current_time,
             time_until_next_decrement,
         })
     }
-    
 }

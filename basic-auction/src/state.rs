@@ -1,14 +1,14 @@
 // Copyright (c) Fairdrop Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use async_graphql::{scalar, SimpleObject};
+use async_graphql::SimpleObject;
 use linera_sdk::{
     linera_base_types::{AccountOwner, Amount, Timestamp},
     views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
 };
 use serde::{Deserialize, Serialize};
 
-use fairdrop_basic::AuctionParameters;
+use fairdrop_basic::{AuctionParameters, AuctionStatus};
    
 /// Information about a participant's bid in the auction
 #[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
@@ -20,44 +20,14 @@ pub struct ParticipantInfo {
     pub bid_timestamp: Timestamp,
 }
 
-/// The status of the auction
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-pub enum AuctionStatus {
-    /// Auction is scheduled but hasn't started yet
-    Scheduled,
-
-    /// Auction is active and accepting bids
-    #[default]
-    Active,
-
-    /// Auction has ended (sold out or reached floor price)
-    Ended,
-}
-
-scalar!(AuctionStatus);
-
-impl AuctionStatus {
-    /// Returns `true` if the auction is active and accepting bids
-    pub fn is_active(&self) -> bool {
-        matches!(self, AuctionStatus::Active)
-    }
-
-    /// Returns `true` if the auction has ended
-    pub fn is_ended(&self) -> bool {
-        matches!(self, AuctionStatus::Ended)
-    }
-
-    /// Returns `true` if the auction is scheduled for the future
-    pub fn is_scheduled(&self) -> bool {
-        matches!(self, AuctionStatus::Scheduled)
-    }
-}
+// Note: AuctionStatus is now defined in lib.rs and imported above
 
 /// The Fairdrop auction state
 #[derive(RootView, SimpleObject)]
 #[view(context = ViewStorageContext)]
 pub struct AuctionState {
     /// Auction configuration parameters (stored at instantiation)
+    /// Only set on the creator chain
     pub parameters: RegisterView<Option<AuctionParameters>>,
 
     /// Current status of the auction
@@ -68,6 +38,36 @@ pub struct AuctionState {
 
     /// Total quantity sold so far
     pub quantity_sold: RegisterView<u64>,
+
+    /// Cached state for chains subscribed to updates
+    /// This is only used on non-creator chains that have subscribed to events
+    pub cached_state: RegisterView<Option<CachedAuctionState>>,
+}
+
+/// Cached auction state for chains subscribed to updates
+/// This allows non-creator chains to serve queries without hitting the creator chain
+#[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
+pub struct CachedAuctionState {
+    /// Auction parameters (copied from creator chain)
+    pub owner: AccountOwner,
+    pub start_timestamp: Timestamp,
+    pub start_price: Amount,
+    pub floor_price: Amount,
+    pub decrement_rate: Amount,
+    pub decrement_interval: u64,
+    pub total_quantity: u64,
+
+    /// Total quantity sold (from latest event)
+    pub quantity_sold: u64,
+
+    /// Current auction status (from latest event)
+    pub status: AuctionStatus,
+
+    /// Last known current price
+    pub current_price: Amount,
+
+    /// Timestamp of last update
+    pub last_updated: Timestamp,
 }
 
 /// Comprehensive auction information
