@@ -49,7 +49,7 @@ Auction for 250,000 tokens:
 - Floor price of 1
 
 ```bash
-linera project publish-and-create \
+linera publish-and-create \
   --json-argument '{
   "start_timestamp": 1762598125457000,
   "start_price": "100.",

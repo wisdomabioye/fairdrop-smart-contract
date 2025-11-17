@@ -11,8 +11,7 @@ This is a stage-by-stage approach to implementing the Fairdrop smart contract on
 
 1. **Install Linera SDK**
    ```bash
-   # Follow instructions at https://linera.io
-   cargo install linera-service
+   # Follow instructions at https://linera.dev
    ```
 
 ---
@@ -35,8 +34,16 @@ This is a stage-by-stage approach to implementing the Fairdrop smart contract on
 cd basic-auction
 cargo build --release --target wasm32-unknown-unknown
 
-# Start local Linera network
-linera net up
+# Deploy
+linera publish-and-create \
+  --json-argument '{
+  "start_timestamp": 1762598125457000,
+  "start_price": "100.",
+  "floor_price": "1.",
+  "decrement_rate": "1.",
+  "decrement_interval": 600,
+  "total_quantity": 250000
+  }'
 
 ```
 
@@ -103,9 +110,6 @@ self.runtime.open_chain(
 # Unit tests
 cargo test
 
-# Integration tests with local network
-linera net up
-linera project publish-and-create
 # Run operations and verify state
 ```
 
@@ -123,8 +127,7 @@ src/
 ## Resources
 
 - **Linera Documentation**: https://linera.dev
-- **Example Applications**: `/linera-protocol/examples/`
-- **Specification**: `FAIRDROP_SMART_CONTRACT_SPEC.md`
+- **Example Applications**: `https://github.com/linera-io/linera-protocol/examples/`
 
 ---
 
