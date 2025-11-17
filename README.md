@@ -20,7 +20,7 @@ This is a stage-by-stage approach to implementing the Fairdrop smart contract on
 
 ### STAGE 1: Basic Auction MVP
 
-**Goal**: Core auction logic without external dependencies
+**Goal**: Core auction logic
 
 **Features**:
 - Auction initialization with parameters (start_price, decrement_rate, floor_price)
