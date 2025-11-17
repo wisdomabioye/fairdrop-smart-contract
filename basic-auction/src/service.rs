@@ -114,6 +114,11 @@ impl QueryRoot {
         Some(params.total_quantity.saturating_sub(sold))
     }
 
+    /// Get the remaining quantity available for sale
+    async fn quantity_sold(&self) -> u64 {
+        *self.auction_state.quantity_sold.get()
+    }
+
     /// Check if this chain has the auction state
     /// Returns true if the auction was instantiated on this chain
     async fn has_auction_state(&self) -> bool {
