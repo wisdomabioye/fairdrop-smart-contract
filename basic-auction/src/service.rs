@@ -7,11 +7,11 @@ mod state;
 
 use std::sync::Arc;
 
-use async_graphql::{Context, EmptySubscription, Object, Request, Response, Schema};
+use async_graphql::{Context, Object, Request, Response, Schema, Subscription};
 use fairdrop_basic::{FairdropAbi, Operation};
 use linera_sdk::{
     graphql::GraphQLMutationRoot as _,
-    linera_base_types::{Amount, WithServiceAbi},
+    linera_base_types::{Amount, ChainId, WithServiceAbi},
     views::View,
     Service, ServiceRuntime,
 };
@@ -35,6 +35,12 @@ pub struct ChainInfo {
 
 struct QueryRoot {
     auction_state: Arc<AuctionState>,
+}
+
+struct SubscriptionRoot {
+    auction_state: Arc<AuctionState>,
+    #[allow(dead_code)]
+    runtime: Arc<ServiceRuntime<FairdropService>>,
 }
 
 linera_sdk::service!(FairdropService);
@@ -63,7 +69,10 @@ impl Service for FairdropService {
                 auction_state: self.state.clone(),
             },
             Operation::mutation_root(self.runtime.clone()),
-            EmptySubscription,
+            SubscriptionRoot {
+                auction_state: self.state.clone(),
+                runtime: self.runtime.clone(),
+            },
         )
         .data(runtime)
         .finish();
@@ -143,6 +152,69 @@ impl QueryRoot {
         self.auction_state.cached_state.get().clone()
     }
 
+    /// Get stream events received from subscriptions
+    /// Returns a list of stored stream events with metadata
+    /// Optionally filter by chain_id
+    async fn stream_events(&self, chain_id: Option<ChainId>) -> Vec<state::StoredStreamEvent> {
+        let mut events = Vec::new();
+
+        // Iterate through all stored stream events
+        if let Ok(all_event_keys) = self.auction_state.stream_events.indices().await {
+            for event_key in all_event_keys {
+                if let Ok(Some(event_json)) = self.auction_state.stream_events.get(&event_key).await {
+                    // Deserialize the stored event wrapper
+                    if let Ok(stored_event) = serde_json::from_str::<state::StoredStreamEvent>(&event_json) {
+                        // Apply chain_id filter if provided
+                        if let Some(filter_chain_id) = chain_id {
+                            if stored_event.chain_id == filter_chain_id {
+                                events.push(stored_event);
+                            }
+                        } else {
+                            events.push(stored_event);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp descending (newest first)
+        events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        events
+    }
+
+    /// Get stream events as JSON strings (for easier frontend parsing)
+    /// Optionally filter by chain_id
+    async fn stream_events_json(&self, chain_id: Option<ChainId>) -> Vec<String> {
+        let mut events = Vec::new();
+
+        // Iterate through all stored stream events
+        if let Ok(all_event_keys) = self.auction_state.stream_events.indices().await {
+            for event_key in all_event_keys {
+                if let Ok(Some(event_json)) = self.auction_state.stream_events.get(&event_key).await {
+                    // Deserialize to check chain_id if filtering
+                    if let Some(filter_chain_id) = chain_id {
+                        if let Ok(stored_event) = serde_json::from_str::<state::StoredStreamEvent>(&event_json) {
+                            if stored_event.chain_id == filter_chain_id {
+                                events.push((stored_event.timestamp, event_json));
+                            }
+                        }
+                    } else {
+                        // No filter, include all events
+                        if let Ok(stored_event) = serde_json::from_str::<state::StoredStreamEvent>(&event_json) {
+                            events.push((stored_event.timestamp, event_json));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp descending (newest first)
+        events.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Return just the JSON strings
+        events.into_iter().map(|(_, json)| json).collect()
+    }
+
     /// Get information about the auction state
     /// Returns None if the auction is not instantiated on this chain
     ///
@@ -194,6 +266,100 @@ impl QueryRoot {
             status: *self.auction_state.status.get(),
             current_time,
             time_until_next_decrement,
+        })
+    }
+}
+
+/// GraphQL subscription methods
+#[Subscription]
+impl SubscriptionRoot {
+    /// Subscribe to real-time auction events
+    /// Returns a live stream of auction events filtered by chain ID
+    /// This actively polls for new events every 2 seconds
+    async fn auction_notifications(
+        &self,
+        #[graphql(desc = "Chain ID to monitor for events")] chain_id: ChainId,
+    ) -> impl async_graphql::futures_util::Stream<Item = async_graphql::Result<String>> {
+        use async_graphql::futures_util::stream;
+
+        let auction_state = Arc::clone(&self.auction_state);
+        let chain_id_clone = chain_id;
+
+        // Create channel for sending events to the stream
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        // Spawn background task to continuously poll for new events
+        tokio::spawn(async move {
+            let mut last_counter = 0u64;
+            let mut has_sent_initial = false;
+
+            loop {
+                // Get all event keys from storage
+                if let Ok(all_keys) = auction_state.stream_events.indices().await {
+                    let mut new_events = Vec::new();
+
+                    // Collect new events we haven't seen yet
+                    for key in all_keys {
+                        // Only process events with counter > last_counter
+                        if key > last_counter || !has_sent_initial {
+                            if let Ok(Some(event_json)) = auction_state.stream_events.get(&key).await {
+                                if let Ok(stored_event) = serde_json::from_str::<state::StoredStreamEvent>(&event_json) {
+                                    // Filter by chain_id
+                                    if stored_event.chain_id == chain_id_clone {
+                                        new_events.push((key, event_json));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Sort events by key (chronological order)
+                    new_events.sort_by_key(|(key, _)| *key);
+
+                    // Send new events to the stream
+                    let has_new_events = !new_events.is_empty();
+                    for (key, event_json) in new_events {
+                        if tx.send(Ok(event_json)).await.is_err() {
+                            // Client disconnected, stop the task
+                            return;
+                        }
+                        last_counter = last_counter.max(key);
+                    }
+
+                    if has_new_events {
+                        has_sent_initial = true;
+                    }
+
+                    // Send heartbeat if no new events (keeps connection alive)
+                    if !has_new_events && has_sent_initial {
+                        let heartbeat = serde_json::json!({
+                            "type": "heartbeat",
+                            "timestamp": std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_micros() as u64,
+                            "message": "Subscription active, waiting for new auction events"
+                        });
+
+                        if let Ok(heartbeat_json) = serde_json::to_string(&heartbeat) {
+                            if tx.send(Ok(heartbeat_json)).await.is_err() {
+                                return; // Client disconnected
+                            }
+                        }
+                    }
+                }
+
+                // Poll every 2 seconds for new events
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        });
+
+        // Convert channel receiver to async stream
+        stream::unfold(rx, |mut rx| async move {
+            match rx.recv().await {
+                Some(event) => Some((event, rx)),
+                None => None,
+            }
         })
     }
 }

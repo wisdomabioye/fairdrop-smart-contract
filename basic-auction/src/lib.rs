@@ -140,7 +140,7 @@ pub enum Message {
 }
 
 /// Events for streaming auction updates to subscribed chains
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum AuctionEvent {
     /// Auction parameters initialized - sent when a chain subscribes
     /// This contains all the static configuration needed to interpret other events

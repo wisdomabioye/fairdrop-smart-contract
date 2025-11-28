@@ -90,6 +90,12 @@ impl Contract for FairdropContract {
         self.state.parameters.set(Some(params));
         self.state.status.set(status);
         self.state.quantity_sold.set(0);
+
+        // Only emit initialization event if we're on the creator chain
+        let creator_chain = self.runtime.application_creator_chain_id();
+        if self.runtime.chain_id() == creator_chain {
+            self.emit_initialization_event();
+        }
     }
 
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
@@ -119,12 +125,12 @@ impl Contract for FairdropContract {
                 let app_id = self.runtime.application_id().forget_abi();
                 self.runtime.subscribe_to_events(creator_chain, app_id, AUCTION_STREAM.into());
 
-                // If we're on the creator chain, emit initialization event directly
+                // Request initialization event to get current state
                 if self.runtime.chain_id() == creator_chain {
+                    // On creator chain, emit directly
                     self.emit_initialization_event();
                 } else {
-                    // If we're on a different chain, send a message to the creator chain
-                    // to request it emits an initialization event
+                    // On subscriber chain, send message to creator chain
                     let message = Message::RequestInitialization;
                     self.runtime
                         .prepare_message(message)
@@ -194,9 +200,12 @@ impl Contract for FairdropContract {
         for update in updates {
             // Process all new events from the subscribed stream
             for index in update.new_indices() {
-                let event = self
+                let event: AuctionEvent = self
                     .runtime
                     .read_event(update.chain_id, AUCTION_STREAM.into(), index);
+
+                // Store event for service layer queries
+                self.store_auction_event_for_service(update.chain_id, event.clone()).await;
 
                 // Update cached state based on event type
                 match event {
@@ -268,6 +277,39 @@ impl Contract for FairdropContract {
 }
 
 impl FairdropContract {
+    /// Stores auction event for service layer queries
+    /// This allows the service to access historical events received via streams
+    async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
+        let timestamp = match &event {
+            AuctionEvent::AuctionInitialized { timestamp, .. } => *timestamp,
+            AuctionEvent::BidPlaced { timestamp, .. } => *timestamp,
+            AuctionEvent::StatusChanged { timestamp, .. } => *timestamp,
+        };
+
+        let event_type = match &event {
+            AuctionEvent::AuctionInitialized { .. } => "AuctionInitialized",
+            AuctionEvent::BidPlaced { .. } => "BidPlaced",
+            AuctionEvent::StatusChanged { .. } => "StatusChanged",
+        };
+
+        // Get and increment counter
+        let counter = *self.state.stream_event_counter.get();
+        self.state.stream_event_counter.set(counter + 1);
+
+        // Create wrapper with metadata
+        let wrapper = state::StoredStreamEvent {
+            chain_id,
+            timestamp: timestamp.micros(),
+            event_type: event_type.to_string(),
+            event_data: serde_json::to_string(&event).unwrap_or_default(),
+        };
+
+        // Serialize wrapper to JSON for storage
+        if let Ok(wrapper_json) = serde_json::to_string(&wrapper) {
+            let _ = self.state.stream_events.insert(&counter, wrapper_json);
+        }
+    }
+
     /// Emits an initialization event with current auction state
     /// Should only be called on the creator chain
     fn emit_initialization_event(&mut self) {
