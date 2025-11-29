@@ -91,11 +91,13 @@ impl Contract for FairdropContract {
         self.state.status.set(status);
         self.state.quantity_sold.set(0);
 
-        // Only emit initialization event if we're on the creator chain
-        let creator_chain = self.runtime.application_creator_chain_id();
-        if self.runtime.chain_id() == creator_chain {
-            self.emit_initialization_event();
-        }
+        // Subscribe to own stream so emitted events are indexed and relayed to subscribers
+        let chain_id = self.runtime.chain_id();
+        let app_id = self.runtime.application_id().forget_abi();
+        self.runtime.subscribe_to_events(chain_id, app_id, AUCTION_STREAM.into());
+
+        // Emit initialization event (will now be indexed due to self-subscription)
+        self.emit_initialization_event();
     }
 
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
@@ -198,8 +200,13 @@ impl Contract for FairdropContract {
         }
 
         for update in updates {
-            // Process all new events from the subscribed stream
-            for index in update.new_indices() {
+            // Verify this is the auction stream we're subscribed to
+            let stream_name = update.stream_id.stream_name;
+            if stream_name != AUCTION_STREAM.into() {
+                continue;
+            }
+
+            for index in update.previous_index..update.next_index {
                 let event: AuctionEvent = self
                     .runtime
                     .read_event(update.chain_id, AUCTION_STREAM.into(), index);
@@ -403,17 +410,14 @@ impl FairdropContract {
         let new_quantity_sold = quantity_sold + quantity;
         self.state.quantity_sold.set(new_quantity_sold);
 
-        // Emit event for subscribers (only on creator chain)
-        if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
-            let event = AuctionEvent::BidPlaced {
-                bidder,
-                quantity,
-                new_total_sold: new_quantity_sold,
-                current_price: _current_price,
-                timestamp: current_time,
-            };
-            self.runtime.emit(AUCTION_STREAM.into(), &event);
-        }
+        let event = AuctionEvent::BidPlaced {
+            bidder,
+            quantity,
+            new_total_sold: new_quantity_sold,
+            current_price: _current_price,
+            timestamp: current_time,
+        };
+        self.runtime.emit(AUCTION_STREAM.into(), &event);
 
         // Check if auction should end (sold out or floor price reached)
         if new_quantity_sold >= total_quantity {
