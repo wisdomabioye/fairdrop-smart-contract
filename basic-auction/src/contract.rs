@@ -41,6 +41,7 @@ impl Contract for FairdropContract {
     }
 
     async fn instantiate(&mut self, argument: InstantiationArgument) {
+
         assert!(
             argument.start_price > argument.floor_price,
             "Start price must be greater than floor price"
@@ -92,12 +93,14 @@ impl Contract for FairdropContract {
         self.state.quantity_sold.set(0);
 
         // Subscribe to own stream so emitted events are indexed and relayed to subscribers
-        let chain_id = self.runtime.chain_id();
+        // let chain_id = self.runtime.chain_id();
+        let chain_id = self.runtime.application_creator_chain_id();
         let app_id = self.runtime.application_id().forget_abi();
         self.runtime.subscribe_to_events(chain_id, app_id, AUCTION_STREAM.into());
 
         // Emit initialization event (will now be indexed due to self-subscription)
         self.emit_initialization_event();
+
     }
 
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
@@ -116,7 +119,8 @@ impl Contract for FairdropContract {
                     let message = Message::PlaceBid { bidder, quantity };
                     self.runtime
                         .prepare_message(message)
-                        .with_authentication()
+                        // .with_authentication()
+                        // .with_tracking()  // Track message delivery - bounces back on failure
                         .send_to(self.runtime.application_creator_chain_id());
                 }
             },
@@ -166,9 +170,9 @@ impl Contract for FairdropContract {
                 }
 
                 // Verify the message authentication
-                self.runtime
-                    .check_account_permission(bidder)
-                    .expect("Permission required for placing bid");
+                // self.runtime
+                //     .check_account_permission(bidder)
+                //     .expect("Permission required for placing bid");
 
                 self.execute_place_bid_internal(bidder, quantity).await;
             }
@@ -340,7 +344,7 @@ impl FairdropContract {
             current_price,
             timestamp: current_time,
         };
-
+        
         self.runtime.emit(AUCTION_STREAM.into(), &event);
     }
 

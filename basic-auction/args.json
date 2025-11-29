@@ -1,8 +1,8 @@
 {
-  "start_timestamp": 1763390677004,
-  "start_price": "12000.",
+  "start_timestamp": 1763390677704,
+  "start_price": "2000.",
   "floor_price": "999.",
   "decrement_rate": "9.",
-  "decrement_interval": 600000,
-  "total_quantity": 50
+  "decrement_interval": 300,
+  "total_quantity": 100
 }

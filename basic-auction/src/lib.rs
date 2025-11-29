@@ -115,8 +115,8 @@ pub enum Operation {
         quantity: u64
     },
 
-    /// Subscribe to auction updates from the creator chain
-    /// This allows a chain to receive real-time updates via event streaming
+    // /// Subscribe to auction updates from the creator chain
+    // /// This allows a chain to receive real-time updates via event streaming
     Subscribe,
 
     /// Unsubscribe from auction updates
