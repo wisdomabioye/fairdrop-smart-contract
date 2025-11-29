@@ -11,7 +11,7 @@ use linera_sdk::{
     linera_base_types::{AccountOwner, Amount, WithContractAbi, StreamUpdate},
     views::{RootView, View}
 };
-use self::state::{AuctionState, CachedAuctionState, ParticipantInfo};
+use self::state::{AuctionState, CachedAuctionState};
 
 /// Stream name for auction events
 const AUCTION_STREAM: &[u8] = b"auction_updates";
@@ -113,7 +113,7 @@ impl Contract for FairdropContract {
 
                 // If we're on the creator chain, execute directly
                 if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
-                    self.execute_place_bid_internal(bidder, quantity).await;
+                    self.execute_place_bid_internal(bidder, quantity);
                 } else {
                     // Otherwise, send a message to the creator chain
                     let message = Message::PlaceBid { bidder, quantity };
@@ -174,7 +174,7 @@ impl Contract for FairdropContract {
                 //     .check_account_permission(bidder)
                 //     .expect("Permission required for placing bid");
 
-                self.execute_place_bid_internal(bidder, quantity).await;
+                self.execute_place_bid_internal(bidder, quantity);
             }
 
             Message::RequestInitialization => {
@@ -349,7 +349,10 @@ impl FairdropContract {
     }
 
     /// Executes a bid placement operation (internal - bidder already authenticated)
-    async fn execute_place_bid_internal(&mut self, bidder: AccountOwner, quantity: u64) {
+    /// Note: Participant tracking has been removed to make this function synchronous
+    /// and ensure events are emitted immediately. Participant info can be reconstructed
+    /// from BidPlaced events on the service layer if needed.
+    fn execute_place_bid_internal(&mut self, bidder: AccountOwner, quantity: u64) {
 
         // Check if auction has started
         let current_time = self.runtime.system_time();
@@ -386,39 +389,18 @@ impl FairdropContract {
         );
 
         // Calculate current price (for informational purposes in Stage 1)
-        let _current_price = self.calculate_current_price();
-
-        // Record the bid
-        let participant_info = ParticipantInfo {
-            quantity,
-            bid_timestamp: current_time,
-        };
-
-        // Update or add participant info
-        let existing = self.state.participants.get(&bidder).await
-            .expect("Failed to read participant info");
-
-        if let Some(mut existing_info) = existing {
-            // Update existing bid
-            existing_info.quantity += quantity;
-            existing_info.bid_timestamp = current_time;
-            self.state.participants.insert(&bidder, existing_info)
-                .expect("Failed to update participant");
-        } else {
-            // New participant
-            self.state.participants.insert(&bidder, participant_info)
-                .expect("Failed to insert participant");
-        }
+        let current_price = self.calculate_current_price();
 
         // Update total quantity sold
         let new_quantity_sold = quantity_sold + quantity;
         self.state.quantity_sold.set(new_quantity_sold);
 
+        // Emit event immediately (synchronous)
         let event = AuctionEvent::BidPlaced {
             bidder,
             quantity,
             new_total_sold: new_quantity_sold,
-            current_price: _current_price,
+            current_price,
             timestamp: current_time,
         };
         self.runtime.emit(AUCTION_STREAM.into(), &event);
