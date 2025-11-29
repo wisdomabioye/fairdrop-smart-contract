@@ -216,7 +216,7 @@ impl Contract for FairdropContract {
                     .read_event(update.chain_id, AUCTION_STREAM.into(), index);
 
                 // Store event for service layer queries
-                self.store_auction_event_for_service(update.chain_id, event.clone()).await;
+                // self.store_auction_event_for_service(update.chain_id, event.clone()).await;
 
                 // Update cached state based on event type
                 match event {
@@ -290,36 +290,36 @@ impl Contract for FairdropContract {
 impl FairdropContract {
     /// Stores auction event for service layer queries
     /// This allows the service to access historical events received via streams
-    async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
-        let timestamp = match &event {
-            AuctionEvent::AuctionInitialized { timestamp, .. } => *timestamp,
-            AuctionEvent::BidPlaced { timestamp, .. } => *timestamp,
-            AuctionEvent::StatusChanged { timestamp, .. } => *timestamp,
-        };
+    // async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
+    //     let timestamp = match &event {
+    //         AuctionEvent::AuctionInitialized { timestamp, .. } => *timestamp,
+    //         AuctionEvent::BidPlaced { timestamp, .. } => *timestamp,
+    //         AuctionEvent::StatusChanged { timestamp, .. } => *timestamp,
+    //     };
 
-        let event_type = match &event {
-            AuctionEvent::AuctionInitialized { .. } => "AuctionInitialized",
-            AuctionEvent::BidPlaced { .. } => "BidPlaced",
-            AuctionEvent::StatusChanged { .. } => "StatusChanged",
-        };
+    //     let event_type = match &event {
+    //         AuctionEvent::AuctionInitialized { .. } => "AuctionInitialized",
+    //         AuctionEvent::BidPlaced { .. } => "BidPlaced",
+    //         AuctionEvent::StatusChanged { .. } => "StatusChanged",
+    //     };
 
-        // Get and increment counter
-        let counter = *self.state.stream_event_counter.get();
-        self.state.stream_event_counter.set(counter + 1);
+    //     // Get and increment counter
+    //     let counter = *self.state.stream_event_counter.get();
+    //     self.state.stream_event_counter.set(counter + 1);
 
-        // Create wrapper with metadata
-        let wrapper = state::StoredStreamEvent {
-            chain_id,
-            timestamp: timestamp.micros(),
-            event_type: event_type.to_string(),
-            event_data: serde_json::to_string(&event).unwrap_or_default(),
-        };
+    //     // Create wrapper with metadata
+    //     let wrapper = state::StoredStreamEvent {
+    //         chain_id,
+    //         timestamp: timestamp.micros(),
+    //         event_type: event_type.to_string(),
+    //         event_data: serde_json::to_string(&event).unwrap_or_default(),
+    //     };
 
-        // Serialize wrapper to JSON for storage
-        if let Ok(wrapper_json) = serde_json::to_string(&wrapper) {
-            let _ = self.state.stream_events.insert(&counter, wrapper_json);
-        }
-    }
+    //     // Serialize wrapper to JSON for storage
+    //     if let Ok(wrapper_json) = serde_json::to_string(&wrapper) {
+    //         let _ = self.state.stream_events.insert(&counter, wrapper_json);
+    //     }
+    // }
 
     /// Emits an initialization event with current auction state
     /// Should only be called on the creator chain
