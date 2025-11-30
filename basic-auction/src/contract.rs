@@ -98,7 +98,6 @@ impl Contract for FairdropContract {
         self.runtime.subscribe_to_events(chain_id, app_id, AUCTION_STREAM.into());
 
         self.emit_initialization_event();
-
     }
 
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
@@ -153,44 +152,45 @@ impl Contract for FairdropContract {
                 self.state.cached_state.set(None);
             },
 
-            Operation::CreateApplication {
-                start_timestamp,
-                start_price,
-                floor_price,
-                decrement_rate,
-                decrement_interval,
-                total_quantity,
-            } => {
-                // Create the instantiation argument from the operation parameters
-                let instantiation_argument = InstantiationArgument {
-                    start_timestamp,
-                    start_price,
-                    floor_price,
-                    decrement_rate,
-                    decrement_interval,
-                    total_quantity,
-                };
+            /// Dynamic Application creation is not permitted
+            // Operation::CreateApplication {
+            //     start_timestamp,
+            //     start_price,
+            //     floor_price,
+            //     decrement_rate,
+            //     decrement_interval,
+            //     total_quantity,
+            // } => {
+            //     // Create the instantiation argument from the operation parameters
+            //     let instantiation_argument = InstantiationArgument {
+            //         start_timestamp,
+            //         start_price,
+            //         floor_price,
+            //         decrement_rate,
+            //         decrement_interval,
+            //         total_quantity,
+            //     };
 
-                // Parse the module ID from the constant
-                let module_id = ModuleId::from_str("95ba7951ed630e0ccf2094c2dbe12320877dec37fa7f5051e3fe9ff5ae564533c3a651d88772abc1a1b680feb5178a55e7157d1189f61ae9eb064ebbf964770400")
-                    .expect("Invalid module ID");
+            //     // Parse the module ID from the constant
+            //     let module_id = ModuleId::from_str("95ba7951ed630e0ccf2094c2dbe12320877dec37fa7f5051e3fe9ff5ae564533c3a651d88772abc1a1b680feb5178a55e7157d1189f61ae9eb064ebbf964770400")
+            //         .expect("Invalid module ID");
 
-                // Create a new application instance
-                let app_id = self.runtime.create_application::<FairdropAbi, (), InstantiationArgument>(
-                    module_id,
-                    &(), // No parameters
-                    &instantiation_argument,
-                    vec![], // No required application IDs
-                );
+            //     // Create a new application instance
+            //     let app_id = self.runtime.create_application::<FairdropAbi, (), InstantiationArgument>(
+            //         module_id,
+            //         &(), // No parameters
+            //         &instantiation_argument,
+            //         vec![], // No required application IDs
+            //     );
 
-                // Get and increment counter
-                let counter = *self.state.created_applications_counter.get();
-                self.state.created_applications_counter.set(counter + 1);
+            //     // Get and increment counter
+            //     let counter = *self.state.created_applications_counter.get();
+            //     self.state.created_applications_counter.set(counter + 1);
 
-                // Store the created application ID
-                self.state.created_applications.insert(&counter, app_id.forget_abi())
-                    .expect("Failed to store created application ID");
-            },
+            //     // Store the created application ID
+            //     self.state.created_applications.insert(&counter, app_id.forget_abi())
+            //         .expect("Failed to store created application ID");
+            // },
         }
     }
 
@@ -309,7 +309,7 @@ impl Contract for FairdropContract {
 }
 
 impl FairdropContract {
-    /// Stores auction event for service layer queries
+    /// Stores auction event for service layer queries (Testing purpose only)
     /// This allows the service to access historical events received via streams
     async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
         let timestamp = match &event {

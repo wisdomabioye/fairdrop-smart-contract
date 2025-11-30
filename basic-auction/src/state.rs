@@ -46,18 +46,18 @@ pub struct AuctionState {
     /// Counter for stream events (auto-incrementing)
     pub stream_event_counter: RegisterView<u64>,
 
-    /// Stream events storage for service layer queries
+    /// Stream events storage for service layer queries (Testing purpose only)
     /// Key: event_counter (u64), Value: JSON with chain_id, timestamp, and event data
     /// This allows the service to query historical events received via streams
     pub stream_events: MapView<u64, String>,
 
     /// Counter for created applications (auto-incrementing)
-    pub created_applications_counter: RegisterView<u64>,
+    // pub created_applications_counter: RegisterView<u64>,
 
     /// Collection of created application IDs
     /// Key: counter (u64), Value: ApplicationId
     /// Stores all applications created via the CreateApplication operation
-    pub created_applications: MapView<u64, ApplicationId>,
+    // pub created_applications: MapView<u64, ApplicationId>,
 }
 
 /// Wrapper for stored stream events with metadata

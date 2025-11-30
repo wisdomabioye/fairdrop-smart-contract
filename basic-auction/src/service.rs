@@ -271,26 +271,26 @@ impl QueryRoot {
 
     /// Get all created application IDs
     /// Returns a list of all applications created via the CreateApplication operation
-    async fn created_applications(&self) -> Vec<ApplicationId> {
-        let mut app_ids = Vec::new();
+    // async fn created_applications(&self) -> Vec<ApplicationId> {
+    //     let mut app_ids = Vec::new();
 
-        // Get the current counter to know how many apps were created
-        let counter = *self.auction_state.created_applications_counter.get();
+    //     // Get the current counter to know how many apps were created
+    //     let counter = *self.auction_state.created_applications_counter.get();
 
-        // Iterate through all created applications
-        for i in 0..counter {
-            if let Ok(Some(app_id)) = self.auction_state.created_applications.get(&i).await {
-                app_ids.push(app_id);
-            }
-        }
+    //     // Iterate through all created applications
+    //     for i in 0..counter {
+    //         if let Ok(Some(app_id)) = self.auction_state.created_applications.get(&i).await {
+    //             app_ids.push(app_id);
+    //         }
+    //     }
 
-        app_ids
-    }
+    //     app_ids
+    // }
 
-    /// Get the count of created applications
-    async fn created_applications_count(&self) -> u64 {
-        *self.auction_state.created_applications_counter.get()
-    }
+    // /// Get the count of created applications
+    // async fn created_applications_count(&self) -> u64 {
+    //     *self.auction_state.created_applications_counter.get()
+    // }
 }
 
 /// GraphQL subscription methods
