@@ -41,7 +41,6 @@ impl Contract for FairdropContract {
     }
 
     async fn instantiate(&mut self, argument: InstantiationArgument) {
-
         assert!(
             argument.start_price > argument.floor_price,
             "Start price must be greater than floor price"
@@ -93,12 +92,10 @@ impl Contract for FairdropContract {
         self.state.quantity_sold.set(0);
 
         // Subscribe to own stream so emitted events are indexed and relayed to subscribers
-        // let chain_id = self.runtime.chain_id();
-        let chain_id = self.runtime.application_creator_chain_id();
+        let chain_id = self.runtime.chain_id();
         let app_id = self.runtime.application_id().forget_abi();
         self.runtime.subscribe_to_events(chain_id, app_id, AUCTION_STREAM.into());
 
-        // Emit initialization event (will now be indexed due to self-subscription)
         self.emit_initialization_event();
 
     }
@@ -110,37 +107,43 @@ impl Contract for FairdropContract {
                     .runtime
                     .authenticated_signer()
                     .expect("Bid must be authenticated");
+                
+                let creator_chain_id = self.runtime.application_creator_chain_id();
 
                 // If we're on the creator chain, execute directly
-                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
+                if self.runtime.chain_id() == creator_chain_id {
                     self.execute_place_bid_internal(bidder, quantity);
                 } else {
                     // Otherwise, send a message to the creator chain
                     let message = Message::PlaceBid { bidder, quantity };
-                    self.runtime
-                        .prepare_message(message)
-                        // .with_authentication()
-                        // .with_tracking()  // Track message delivery - bounces back on failure
-                        .send_to(self.runtime.application_creator_chain_id());
+                    // self.runtime
+                    //     .prepare_message(message)
+                    //     // .with_authentication()
+                    //     .with_tracking()  // Track message delivery - bounces back on failure
+                    //     .send_to(self.runtime.application_creator_chain_id());
+                    self.runtime.send_message(creator_chain_id, message);               
+                    
                 }
             },
 
             Operation::Subscribe => {
                 // Subscribe to auction events from the creator chain
-                let creator_chain = self.runtime.application_creator_chain_id();
+                let creator_chain_id = self.runtime.application_creator_chain_id();
                 let app_id = self.runtime.application_id().forget_abi();
-                self.runtime.subscribe_to_events(creator_chain, app_id, AUCTION_STREAM.into());
+                self.runtime.subscribe_to_events(creator_chain_id, app_id, AUCTION_STREAM.into());
 
                 // Request initialization event to get current state
-                if self.runtime.chain_id() == creator_chain {
+                if self.runtime.chain_id() == creator_chain_id {
                     // On creator chain, emit directly
                     self.emit_initialization_event();
                 } else {
                     // On subscriber chain, send message to creator chain
                     let message = Message::RequestInitialization;
-                    self.runtime
-                        .prepare_message(message)
-                        .send_to(creator_chain);
+                    // self.runtime
+                    //     .prepare_message(message)
+                    //     .with_tracking()
+                    //     .send_to(creator_chain);
+                    self.runtime.send_message(creator_chain_id, message);
                 }
             },
 
@@ -186,7 +189,7 @@ impl Contract for FairdropContract {
                         self.runtime.application_creator_chain_id()
                     );
                 }
-                
+
                 // Emit initialization event for the requesting chain
                 self.emit_initialization_event();
             }
@@ -205,89 +208,84 @@ impl Contract for FairdropContract {
 
         for update in updates {
             // Verify this is the auction stream we're subscribed to
-            let stream_name = update.stream_id.stream_name;
-            if stream_name != AUCTION_STREAM.into() {
+            if update.stream_id.stream_name != AUCTION_STREAM.into() {
                 continue;
             }
 
+            // Process each event in the update range
             for index in update.previous_index..update.next_index {
                 let event: AuctionEvent = self
                     .runtime
                     .read_event(update.chain_id, AUCTION_STREAM.into(), index);
 
-                // Store event for service layer queries
-                // self.store_auction_event_for_service(update.chain_id, event.clone()).await;
-
                 // Update cached state based on event type
-                match event {
-                    AuctionEvent::AuctionInitialized {
-                        owner,
-                        start_timestamp,
-                        start_price,
-                        floor_price,
-                        decrement_rate,
-                        decrement_interval,
-                        total_quantity,
-                        current_quantity_sold,
-                        current_status,
-                        current_price,
-                        timestamp,
-                    } => {
-                        // Initialize cached state with all auction parameters
-                        let cached = CachedAuctionState {
-                            owner,
-                            start_timestamp,
-                            start_price,
-                            floor_price,
-                            decrement_rate,
-                            decrement_interval,
-                            total_quantity,
-                            quantity_sold: current_quantity_sold,
-                            status: current_status,
-                            current_price,
-                            last_updated: timestamp,
-                        };
-
-                        self.state.cached_state.set(Some(cached));
-                    }
-
-                    AuctionEvent::BidPlaced {
-                        new_total_sold,
-                        current_price,
-                        timestamp,
-                        ..
-                    } => {
-                        // Update cached quantity and price
-                        if let Some(mut cached) = self.state.cached_state.get().clone() {
-                            cached.quantity_sold = new_total_sold;
-                            cached.current_price = current_price;
-                            cached.last_updated = timestamp;
-                            self.state.cached_state.set(Some(cached));
-                        }
-                        // If no cached state exists, ignore the update
-                        // (should have received AuctionInitialized first)
-                    }
-
-                    AuctionEvent::StatusChanged {
-                        new_status,
-                        timestamp,
-                    } => {
-                        // Update cached status
-                        if let Some(mut cached) = self.state.cached_state.get().clone() {
-                            cached.status = new_status;
-                            cached.last_updated = timestamp;
-                            self.state.cached_state.set(Some(cached));
-                        }
-                        // If no cached state exists, ignore the update
-                        // (should have received AuctionInitialized first)
-                    }
-                }
+                self.update_cached_state_from_event(event);
             }
         }
     }
 }
 
 impl FairdropContract {
+    /// Updates cached state based on received event
+    /// Only called on subscriber chains
+    fn update_cached_state_from_event(&mut self, event: AuctionEvent) {
+        match event {
+            AuctionEvent::AuctionInitialized {
+                owner,
+                start_timestamp,
+                start_price,
+                floor_price,
+                decrement_rate,
+                decrement_interval,
+                total_quantity,
+                current_quantity_sold,
+                current_status,
+                current_price,
+                timestamp,
+            } => {
+                let cached = CachedAuctionState {
+                    owner,
+                    start_timestamp,
+                    start_price,
+                    floor_price,
+                    decrement_rate,
+                    decrement_interval,
+                    total_quantity,
+                    quantity_sold: current_quantity_sold,
+                    status: current_status,
+                    current_price,
+                    last_updated: timestamp,
+                };
+                self.state.cached_state.set(Some(cached));
+            }
+
+            AuctionEvent::BidPlaced {
+                new_total_sold,
+                current_price,
+                timestamp,
+                ..
+            } => {
+                let mut cached = self.state.cached_state.get().clone()
+                    .expect("BidPlaced event received before AuctionInitialized");
+                cached.quantity_sold = new_total_sold;
+                cached.current_price = current_price;
+                cached.last_updated = timestamp;
+                self.state.cached_state.set(Some(cached));
+            }
+
+            AuctionEvent::StatusChanged {
+                new_status,
+                timestamp,
+            } => {
+                let mut cached = self.state.cached_state.get().clone()
+                    .expect("StatusChanged event received before AuctionInitialized");
+                cached.status = new_status;
+                cached.last_updated = timestamp;
+                self.state.cached_state.set(Some(cached));
+            }
+        }
+    }
+
     /// Stores auction event for service layer queries
     /// This allows the service to access historical events received via streams
     // async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
@@ -348,12 +346,9 @@ impl FairdropContract {
         self.runtime.emit(AUCTION_STREAM.into(), &event);
     }
 
-    /// Executes a bid placement operation (internal - bidder already authenticated)
     /// Note: Participant tracking has been removed to make this function synchronous
-    /// and ensure events are emitted immediately. Participant info can be reconstructed
-    /// from BidPlaced events on the service layer if needed.
+    /// and ensure events are emitted immediately.
     fn execute_place_bid_internal(&mut self, bidder: AccountOwner, quantity: u64) {
-
         // Check if auction has started
         let current_time = self.runtime.system_time();
         let start_time = self.parameters().start_timestamp;
@@ -395,7 +390,6 @@ impl FairdropContract {
         let new_quantity_sold = quantity_sold + quantity;
         self.state.quantity_sold.set(new_quantity_sold);
 
-        // Emit event immediately (synchronous)
         let event = AuctionEvent::BidPlaced {
             bidder,
             quantity,

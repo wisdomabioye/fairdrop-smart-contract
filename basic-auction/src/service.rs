@@ -275,7 +275,6 @@ impl QueryRoot {
 impl SubscriptionRoot {
     /// Subscribe to real-time auction events
     /// Returns a live stream of auction events filtered by chain ID
-    /// This actively polls for new events every 2 seconds
     async fn auction_notifications(
         &self,
         #[graphql(desc = "Chain ID to monitor for events")] chain_id: ChainId,
