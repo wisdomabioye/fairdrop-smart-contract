@@ -6,10 +6,9 @@
 mod state;
 
 use fairdrop_basic::{AuctionEvent, AuctionParameters, AuctionStatus, FairdropAbi, InstantiationArgument, Message, Operation};
-use std::str::FromStr;
 use linera_sdk::{
     Contract, ContractRuntime,
-    linera_base_types::{AccountOwner, Amount, WithContractAbi, StreamUpdate, ModuleId},
+    linera_base_types::{AccountOwner, Amount, WithContractAbi, StreamUpdate},
     views::{RootView, View}
 };
 use self::state::{AuctionState, CachedAuctionState, ParticipantInfo};
@@ -59,6 +58,12 @@ impl Contract for FairdropContract {
             "Total quantity must be greater than zero"
         );
 
+        // Validate timestamps
+        assert!(
+            argument.end_timestamp > argument.start_timestamp,
+            "End time must be after start time"
+        );
+
         // Validate that the application parameters were configured correctly.
         self.runtime.application_parameters();
 
@@ -72,6 +77,7 @@ impl Contract for FairdropContract {
         let params = AuctionParameters {
             owner,
             start_timestamp: argument.start_timestamp,
+            end_timestamp: argument.end_timestamp,
             start_price: argument.start_price,
             floor_price: argument.floor_price,
             decrement_rate: argument.decrement_rate,
@@ -92,7 +98,7 @@ impl Contract for FairdropContract {
         self.state.status.set(status);
         self.state.quantity_sold.set(0);
 
-        // Subscribe to own stream so emitted events are indexed and relayed to subscribers
+        // Subscribe to own stream
         let chain_id = self.runtime.chain_id();
         let app_id = self.runtime.application_id().forget_abi();
         self.runtime.subscribe_to_events(chain_id, app_id, AUCTION_STREAM.into());
@@ -108,18 +114,47 @@ impl Contract for FairdropContract {
                     .authenticated_signer()
                     .expect("Bid must be authenticated");
 
-                // If we're on the creator chain, execute directly
-                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
-                    self.execute_place_bid_internal(bidder, quantity).await;
-                } else {
-                    // Otherwise, send a message to the creator chain
-                    let message = Message::PlaceBid { bidder, quantity };
-                    self.runtime
-                        .prepare_message(message)
-                        .with_authentication()
-                        .with_tracking()
-                        .send_to(self.runtime.application_creator_chain_id());
-                }
+                // Two-Contract Pattern: Record pending bid locally, then send to auction chain
+                let auction_chain = self.runtime.application_creator_chain_id();
+                let bidder_chain = self.runtime.chain_id();
+
+                // Prevent bidding directly on creator chain (bids must come from user chains)
+                assert_ne!(
+                    auction_chain, bidder_chain,
+                    "Cannot place bids directly on the auction creator chain. Please place bids from your own chain."
+                );
+
+                let current_time = self.runtime.system_time();
+
+                // Record bid locally with Pending status
+                // Price will be filled in when we receive BidAccepted message
+                let bid_id = *self.state.bid_counter.get();
+                self.state.bid_counter.set(bid_id + 1);
+
+                let user_bid = state::UserBid {
+                    quantity,
+                    bid_price: Amount::ZERO, // Will be updated when BidAccepted received
+                    timestamp: current_time,
+                    status: state::BidStatus::Pending,
+                    clearing_price: None,
+                };
+
+                self.state.my_bids.insert(&bid_id, user_bid)
+                    .expect("Failed to store bid locally");
+
+                // Send message to auction chain with bid_id for matching
+                let message = Message::BidSubmission {
+                    bidder,
+                    quantity,
+                    bidder_chain,
+                    bid_id,
+                };
+
+                self.runtime
+                    .prepare_message(message)
+                    .with_authentication()
+                    .with_tracking()
+                    .send_to(auction_chain);
             },
 
             Operation::Subscribe => {
@@ -129,17 +164,17 @@ impl Contract for FairdropContract {
                 self.runtime.subscribe_to_events(creator_chain, app_id, AUCTION_STREAM.into());
 
                 // Request initialization event to get current state
-                if self.runtime.chain_id() == creator_chain {
-                    // On creator chain, emit directly
-                    self.emit_initialization_event();
-                } else {
-                    // On subscriber chain, send message to creator chain
-                    let message = Message::RequestInitialization;
-                    self.runtime
-                        .prepare_message(message)
-                        .with_tracking()
-                        .send_to(creator_chain);
-                }
+                // if self.runtime.chain_id() == creator_chain {
+                //     // On creator chain, emit directly
+                //     self.emit_initialization_event();
+                // } else {
+                //     // On subscriber chain, send message to creator chain
+                //     let message = Message::RequestInitialization;
+                //     self.runtime
+                //         .prepare_message(message)
+                //         .with_tracking()
+                //         .send_to(creator_chain);
+                // }
             },
 
             Operation::Unsubscribe => {
@@ -150,71 +185,138 @@ impl Contract for FairdropContract {
 
                 // Clear cached state
                 self.state.cached_state.set(None);
-            },
+            }
 
-            /// Dynamic Application creation is not permitted
-            // Operation::CreateApplication {
-            //     start_timestamp,
-            //     start_price,
-            //     floor_price,
-            //     decrement_rate,
-            //     decrement_interval,
-            //     total_quantity,
-            // } => {
-            //     // Create the instantiation argument from the operation parameters
-            //     let instantiation_argument = InstantiationArgument {
-            //         start_timestamp,
-            //         start_price,
-            //         floor_price,
-            //         decrement_rate,
-            //         decrement_interval,
-            //         total_quantity,
-            //     };
-
-            //     // Parse the module ID from the constant
-            //     let module_id = ModuleId::from_str("95ba7951ed630e0ccf2094c2dbe12320877dec37fa7f5051e3fe9ff5ae564533c3a651d88772abc1a1b680feb5178a55e7157d1189f61ae9eb064ebbf964770400")
-            //         .expect("Invalid module ID");
-
-            //     // Create a new application instance
-            //     let app_id = self.runtime.create_application::<FairdropAbi, (), InstantiationArgument>(
-            //         module_id,
-            //         &(), // No parameters
-            //         &instantiation_argument,
-            //         vec![], // No required application IDs
-            //     );
-
-            //     // Get and increment counter
-            //     let counter = *self.state.created_applications_counter.get();
-            //     self.state.created_applications_counter.set(counter + 1);
-
-            //     // Store the created application ID
-            //     self.state.created_applications.insert(&counter, app_id.forget_abi())
-            //         .expect("Failed to store created application ID");
-            // },
+            // Future: Dynamic application creation
+            // Operation::CreateApplication { ... } => { ... }
         }
     }
 
     async fn execute_message(&mut self, message: Message) {
-        // Messages execute on both the sender and receiver chains in Linera.
-        // We only want to process them on the creator chain where the auction state lives.
-        if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
-            // On subscriber/sender chains, messages are no-ops
-            return;
-        }
-
         match message {
-            Message::PlaceBid { bidder, quantity } => {
-                // Verify the message authentication
+            // Two-Contract Pattern: Bid submission from bidder chain
+            Message::BidSubmission { bidder, quantity, bidder_chain, bid_id } => {
+                // Only process on auction creator chain
+                if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
+                    return;
+                }
+
+                // Verify authentication
                 self.runtime
                     .check_account_permission(bidder)
-                    .expect("Permission required for placing bid");
+                    .expect("Bid must be authenticated");
 
-                self.execute_place_bid_internal(bidder, quantity).await;
+                // Validate auction timing
+                let current_time = self.runtime.system_time();
+                let start_time = self.parameters().start_timestamp;
+                let end_time = self.parameters().end_timestamp;
+
+                if current_time < start_time {
+                    self.send_rejection(bidder_chain, bid_id, quantity, "Auction has not started yet");
+                    return;
+                }
+
+                // Automatic time-based finalization
+                if current_time >= end_time {
+                    // Auto-finalize if not already finalized
+                    if *self.state.status.get() == AuctionStatus::Active {
+                        let clearing_price = self.calculate_current_price();
+                        self.state.clearing_price.set(Some(clearing_price));
+                        self.state.status.set(AuctionStatus::Ended);
+                    }
+                    self.send_rejection(bidder_chain, bid_id, quantity, "Auction has ended (time expired)");
+                    return;
+                }
+
+                // Update status if needed (from Scheduled to Active)
+                if *self.state.status.get() == AuctionStatus::Scheduled {
+                    self.state.status.set(AuctionStatus::Active);
+                }
+
+                // Check if auction is active
+                if !self.state.status.get().is_active() {
+                    self.send_rejection(bidder_chain, bid_id, quantity, "Auction is not active");
+                    return;
+                }
+
+                // Check quantity availability
+                let quantity_sold = *self.state.quantity_sold.get();
+                let total_quantity = self.parameters().total_quantity;
+
+                if quantity == 0 {
+                    self.send_rejection(bidder_chain, bid_id, quantity, "Bid quantity must be greater than zero");
+                    return;
+                }
+
+                if quantity_sold + quantity > total_quantity {
+                    let available = total_quantity - quantity_sold;
+                    self.send_rejection(
+                        bidder_chain,
+                        bid_id,
+                        quantity,
+                        &format!("Insufficient quantity. Requested: {}, Available: {}", quantity, available)
+                    );
+                    return;
+                }
+
+                // Calculate current price
+                let current_price = self.calculate_current_price();
+
+                // Record the bid
+                self.record_bid(bidder, quantity, current_price).await;
+
+                // Update total quantity sold
+                let new_quantity_sold = quantity_sold + quantity;
+                self.state.quantity_sold.set(new_quantity_sold);
+
+                // Check if auction should end (sold out)
+                let clearing_price = if new_quantity_sold >= total_quantity {
+                    self.state.status.set(AuctionStatus::Ended);
+                    let clearing = current_price;
+                    self.state.clearing_price.set(Some(clearing));
+                    Some(clearing)
+                } else {
+                    None
+                };
+
+                // Send acceptance message back to bidder chain with bid_id
+                let accept_message = Message::BidAccepted {
+                    bid_id,
+                    quantity,
+                    bid_price: current_price,
+                    clearing_price,
+                };
+
+                self.runtime
+                    .prepare_message(accept_message)
+                    .send_to(bidder_chain);
+            }
+
+            // Bidder-side message handlers
+            Message::BidAccepted { bid_id, quantity, bid_price, clearing_price } => {
+                // Only process on bidder chains (not auction chain)
+                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
+                    return;
+                }
+
+                // Update the specific bid using bid_id
+                self.handle_bid_accepted(bid_id, quantity, bid_price, clearing_price).await;
+            }
+
+            Message::BidRejected { bid_id, quantity, reason } => {
+                // Only process on bidder chains (not auction chain)
+                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
+                    return;
+                }
+
+                // Mark the specific bid as rejected using bid_id
+                self.handle_bid_rejected(bid_id, quantity, reason).await;
             }
 
             Message::RequestInitialization => {
-                // Emit initialization event for the requesting chain
-                self.emit_initialization_event();
+                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
+                    self.emit_initialization_event();
+                }
             }
         }
     }
@@ -244,6 +346,7 @@ impl Contract for FairdropContract {
                     AuctionEvent::AuctionInitialized {
                         owner,
                         start_timestamp,
+                        end_timestamp,
                         start_price,
                         floor_price,
                         decrement_rate,
@@ -258,6 +361,7 @@ impl Contract for FairdropContract {
                         let cached = CachedAuctionState {
                             owner,
                             start_timestamp,
+                            end_timestamp,
                             start_price,
                             floor_price,
                             decrement_rate,
@@ -355,6 +459,7 @@ impl FairdropContract {
         let event = AuctionEvent::AuctionInitialized {
             owner: params.owner,
             start_timestamp: params.start_timestamp,
+            end_timestamp: params.end_timestamp,
             start_price: params.start_price,
             floor_price: params.floor_price,
             decrement_rate: params.decrement_rate,
@@ -367,102 +472,6 @@ impl FairdropContract {
         };
 
         self.runtime.emit(AUCTION_STREAM.into(), &event);
-    }
-
-    /// Executes a bid placement operation (internal - bidder already authenticated)
-    async fn execute_place_bid_internal(&mut self, bidder: AccountOwner, quantity: u64) {
-
-        // Check if auction has started
-        let current_time = self.runtime.system_time();
-        let start_time = self.parameters().start_timestamp;
-        assert!(
-            current_time >= start_time,
-            "Auction has not started yet. Starts at: {:?}",
-            start_time
-        );
-
-        // Update status if needed (from Scheduled to Active)
-        if *self.state.status.get() == AuctionStatus::Scheduled {
-            self.state.status.set(AuctionStatus::Active);
-        }
-
-        // Verify auction is active
-        assert!(
-            self.state.status.get().is_active(),
-            "Auction is not active"
-        );
-
-        // Check quantity availability
-        let quantity_sold = *self.state.quantity_sold.get();
-        let total_quantity = self.parameters().total_quantity;
-        assert!(
-            quantity > 0,
-            "Bid quantity must be greater than zero"
-        );
-        assert!(
-            quantity_sold + quantity <= total_quantity,
-            "Insufficient quantity available. Requested: {}, Available: {}",
-            quantity,
-            total_quantity - quantity_sold
-        );
-
-        // Calculate current price (for informational purposes in Stage 1)
-        let _current_price = self.calculate_current_price();
-
-        // Record the bid
-        let participant_info = ParticipantInfo {
-            quantity,
-            bid_timestamp: current_time,
-        };
-
-        // Update or add participant info
-        let existing = self.state.participants.get(&bidder).await
-            .expect("Failed to read participant info");
-
-        if let Some(mut existing_info) = existing {
-            // Update existing bid
-            existing_info.quantity += quantity;
-            existing_info.bid_timestamp = current_time;
-            self.state.participants.insert(&bidder, existing_info)
-                .expect("Failed to update participant");
-        } else {
-            // New participant
-            self.state.participants.insert(&bidder, participant_info)
-                .expect("Failed to insert participant");
-        }
-
-        // Update total quantity sold
-        let new_quantity_sold = quantity_sold + quantity;
-        self.state.quantity_sold.set(new_quantity_sold);
-
-        // Emit event for subscribers (only on creator chain)
-        if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
-            let event = AuctionEvent::BidPlaced {
-                bidder,
-                quantity,
-                new_total_sold: new_quantity_sold,
-                current_price: _current_price,
-                timestamp: current_time,
-            };
-            self.runtime.emit(AUCTION_STREAM.into(), &event);
-        }
-
-        // Check if auction should end (sold out or floor price reached)
-        if new_quantity_sold >= total_quantity {
-            let old_status = *self.state.status.get();
-            self.state.status.set(AuctionStatus::Ended);
-
-            // Emit status change event (only on creator chain)
-            if self.runtime.chain_id() == self.runtime.application_creator_chain_id()
-                && old_status != AuctionStatus::Ended
-            {
-                let event = AuctionEvent::StatusChanged {
-                    new_status: AuctionStatus::Ended,
-                    timestamp: current_time,
-                };
-                self.runtime.emit(AUCTION_STREAM.into(), &event);
-            }
-        }
     }
 
     /// Calculates the current price based on elapsed time since auction start
@@ -502,6 +511,85 @@ impl FairdropContract {
             .get()
             .as_ref()
             .expect("Application not instantiated. Parameters are None. Make sure instantiate() was called first.")
+    }
+
+    /// Helper method to send bid rejection message
+    fn send_rejection(&mut self, bidder_chain: linera_sdk::linera_base_types::ChainId, bid_id: u64, quantity: u64, reason: &str) {
+        let reject_message = Message::BidRejected {
+            bid_id,
+            quantity,
+            reason: reason.to_string(),
+        };
+
+        self.runtime
+            .prepare_message(reject_message)
+            .send_to(bidder_chain);
+    }
+
+    /// Helper method to record a bid
+    async fn record_bid(&mut self, bidder: AccountOwner, quantity: u64, _bid_price: Amount) {
+        let current_time = self.runtime.system_time();
+        let participant_info = ParticipantInfo {
+            quantity,
+            bid_timestamp: current_time,
+        };
+
+        // Update or add participant info
+        let existing = self.state.participants.get(&bidder).await
+            .expect("Failed to read participant info");
+
+        if let Some(mut existing_info) = existing {
+            // Update existing bid - accumulate quantity
+            existing_info.quantity += quantity;
+            existing_info.bid_timestamp = current_time;
+            self.state.participants.insert(&bidder, existing_info)
+                .expect("Failed to update participant");
+        } else {
+            // New participant
+            self.state.participants.insert(&bidder, participant_info)
+                .expect("Failed to insert participant");
+        }
+    }
+
+    /// Handle BidAccepted message on bidder chain
+    async fn handle_bid_accepted(&mut self, bid_id: u64, quantity: u64, bid_price: Amount, clearing_price: Option<Amount>) {
+        // Get the specific bid by ID
+        if let Ok(Some(mut bid)) = self.state.my_bids.get(&bid_id).await {
+            // Verify this is the right bid (defensive check)
+            if bid.quantity == quantity && bid.status == state::BidStatus::Pending {
+                // Update bid with accepted status and price info
+                bid.status = state::BidStatus::Accepted;
+                bid.bid_price = bid_price;
+                bid.clearing_price = clearing_price;
+
+                self.state.my_bids.insert(&bid_id, bid)
+                    .expect("Failed to update bid");
+
+                // If clearing price is set, calculate refund
+                if let Some(clearing) = clearing_price {
+                    let refund_per_unit = bid_price.saturating_sub(clearing);
+                    let total_refund = refund_per_unit.saturating_mul(quantity as u128);
+
+                    let current_refund = *self.state.refund_owed.get();
+                    self.state.refund_owed.set(current_refund.saturating_add(total_refund));
+                }
+            }
+        }
+    }
+
+    /// Handle BidRejected message on bidder chain
+    async fn handle_bid_rejected(&mut self, bid_id: u64, quantity: u64, _reason: String) {
+        // Get the specific bid by ID
+        if let Ok(Some(mut bid)) = self.state.my_bids.get(&bid_id).await {
+            // Verify this is the right bid (defensive check)
+            if bid.quantity == quantity && bid.status == state::BidStatus::Pending {
+                // Mark bid as rejected
+                bid.status = state::BidStatus::Rejected;
+
+                self.state.my_bids.insert(&bid_id, bid)
+                    .expect("Failed to update bid");
+            }
+        }
     }
 
 }

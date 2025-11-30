@@ -3,7 +3,7 @@
 
 use async_graphql::SimpleObject;
 use linera_sdk::{
-    linera_base_types::{AccountOwner, Amount, ApplicationId, ChainId, Timestamp},
+    linera_base_types::{AccountOwner, Amount, ChainId, Timestamp},
     views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
 };
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,6 @@ pub struct ParticipantInfo {
     /// Timestamp when the bid was placed
     pub bid_timestamp: Timestamp,
 }
-
-// Note: AuctionStatus is now defined in lib.rs and imported above
 
 /// The Fairdrop auction state
 #[derive(RootView, SimpleObject)]
@@ -39,6 +37,22 @@ pub struct AuctionState {
     /// Total quantity sold so far
     pub quantity_sold: RegisterView<u64>,
 
+    /// Clearing price (set when auction is finalized)
+    pub clearing_price: RegisterView<Option<Amount>>,
+
+    /// Tracking who has claimed their tokens
+    pub has_claimed: MapView<AccountOwner, bool>,
+
+    /// Bidder-side state: User's bids on this chain (for two-contract pattern)
+    /// Stores bids placed by users on their own chains
+    pub my_bids: MapView<u64, UserBid>,
+
+    /// Bidder-side state: Counter for bid IDs
+    pub bid_counter: RegisterView<u64>,
+
+    /// Bidder-side state: Total refund owed to user (calculated when clearing_price received)
+    pub refund_owed: RegisterView<Amount>,
+
     /// Cached state for chains subscribed to updates
     /// This is only used on non-creator chains that have subscribed to events
     pub cached_state: RegisterView<Option<CachedAuctionState>>,
@@ -51,12 +65,10 @@ pub struct AuctionState {
     /// This allows the service to query historical events received via streams
     pub stream_events: MapView<u64, String>,
 
-    /// Counter for created applications (auto-incrementing)
+    // Future: Counter for created applications (auto-incrementing)
     // pub created_applications_counter: RegisterView<u64>,
 
-    /// Collection of created application IDs
-    /// Key: counter (u64), Value: ApplicationId
-    /// Stores all applications created via the CreateApplication operation
+    // Future: Collection of created application IDs
     // pub created_applications: MapView<u64, ApplicationId>,
 }
 
@@ -80,6 +92,7 @@ pub struct CachedAuctionState {
     /// Auction parameters (copied from creator chain)
     pub owner: AccountOwner,
     pub start_timestamp: Timestamp,
+    pub end_timestamp: Timestamp,
     pub start_price: Amount,
     pub floor_price: Amount,
     pub decrement_rate: Amount,
@@ -115,6 +128,40 @@ pub struct AuctionInfo {
     pub status: AuctionStatus,
     pub current_time: Timestamp,
     pub time_until_next_decrement: Option<u64>,
+}
+
+// ============================================================================
+// Bidder-Side State Structures (Two-Contract Pattern)
+// ============================================================================
+
+/// Individual bid placed by a user
+#[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
+pub struct UserBid {
+    /// Quantity of units bid for
+    pub quantity: u64,
+
+    /// Price when bid was placed (for refund calculation)
+    pub bid_price: Amount,
+
+    /// Timestamp when bid was placed
+    pub timestamp: Timestamp,
+
+    /// Current status of this bid
+    pub status: BidStatus,
+
+    /// Clearing price (set when auction ends)
+    pub clearing_price: Option<Amount>,
+}
+
+/// Status of a user's bid
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, async_graphql::Enum)]
+pub enum BidStatus {
+    /// Bid submitted, waiting for auction response
+    Pending,
+    /// Bid accepted by auction
+    Accepted,
+    /// Bid rejected by auction
+    Rejected,
 }
 
 #[cfg(test)]
