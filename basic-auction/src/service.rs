@@ -11,7 +11,7 @@ use async_graphql::{Context, Object, Request, Response, Schema, Subscription};
 use fairdrop_basic::{FairdropAbi, Operation};
 use linera_sdk::{
     graphql::GraphQLMutationRoot as _,
-    linera_base_types::{Amount, ChainId, WithServiceAbi},
+    linera_base_types::{Amount, ApplicationId, ChainId, WithServiceAbi},
     views::View,
     Service, ServiceRuntime,
 };
@@ -267,6 +267,29 @@ impl QueryRoot {
             current_time,
             time_until_next_decrement,
         })
+    }
+
+    /// Get all created application IDs
+    /// Returns a list of all applications created via the CreateApplication operation
+    async fn created_applications(&self) -> Vec<ApplicationId> {
+        let mut app_ids = Vec::new();
+
+        // Get the current counter to know how many apps were created
+        let counter = *self.auction_state.created_applications_counter.get();
+
+        // Iterate through all created applications
+        for i in 0..counter {
+            if let Ok(Some(app_id)) = self.auction_state.created_applications.get(&i).await {
+                app_ids.push(app_id);
+            }
+        }
+
+        app_ids
+    }
+
+    /// Get the count of created applications
+    async fn created_applications_count(&self) -> u64 {
+        *self.auction_state.created_applications_counter.get()
     }
 }
 

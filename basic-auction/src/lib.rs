@@ -115,12 +115,28 @@ pub enum Operation {
         quantity: u64
     },
 
-    // /// Subscribe to auction updates from the creator chain
-    // /// This allows a chain to receive real-time updates via event streaming
+    /// Subscribe to auction updates from the creator chain
+    /// This allows a chain to receive real-time updates via event streaming
     Subscribe,
 
     /// Unsubscribe from auction updates
     Unsubscribe,
+
+    /// Create a new instance of this application with the given parameters
+    CreateApplication {
+        /// When the auction starts (allows for scheduled/upcoming auctions)
+        start_timestamp: Timestamp,
+        /// Starting price per unit
+        start_price: Amount,
+        /// Minimum floor price
+        floor_price: Amount,
+        /// Amount to decrease price per interval
+        decrement_rate: Amount,
+        /// Time interval between price decrements (in seconds)
+        decrement_interval: u64,
+        /// Total quantity available for auction
+        total_quantity: u64,
+    }
 }
 
 /// Messages for cross-chain communication

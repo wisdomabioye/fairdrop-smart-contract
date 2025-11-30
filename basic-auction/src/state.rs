@@ -3,7 +3,7 @@
 
 use async_graphql::SimpleObject;
 use linera_sdk::{
-    linera_base_types::{AccountOwner, Amount, ChainId, Timestamp},
+    linera_base_types::{AccountOwner, Amount, ApplicationId, ChainId, Timestamp},
     views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
 };
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,14 @@ pub struct AuctionState {
     /// Key: event_counter (u64), Value: JSON with chain_id, timestamp, and event data
     /// This allows the service to query historical events received via streams
     pub stream_events: MapView<u64, String>,
+
+    /// Counter for created applications (auto-incrementing)
+    pub created_applications_counter: RegisterView<u64>,
+
+    /// Collection of created application IDs
+    /// Key: counter (u64), Value: ApplicationId
+    /// Stores all applications created via the CreateApplication operation
+    pub created_applications: MapView<u64, ApplicationId>,
 }
 
 /// Wrapper for stored stream events with metadata

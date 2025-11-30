@@ -6,9 +6,10 @@
 mod state;
 
 use fairdrop_basic::{AuctionEvent, AuctionParameters, AuctionStatus, FairdropAbi, InstantiationArgument, Message, Operation};
+use std::str::FromStr;
 use linera_sdk::{
     Contract, ContractRuntime,
-    linera_base_types::{AccountOwner, Amount, WithContractAbi, StreamUpdate},
+    linera_base_types::{AccountOwner, Amount, WithContractAbi, StreamUpdate, ModuleId},
     views::{RootView, View}
 };
 use self::state::{AuctionState, CachedAuctionState, ParticipantInfo};
@@ -151,22 +152,58 @@ impl Contract for FairdropContract {
                 // Clear cached state
                 self.state.cached_state.set(None);
             },
+
+            Operation::CreateApplication {
+                start_timestamp,
+                start_price,
+                floor_price,
+                decrement_rate,
+                decrement_interval,
+                total_quantity,
+            } => {
+                // Create the instantiation argument from the operation parameters
+                let instantiation_argument = InstantiationArgument {
+                    start_timestamp,
+                    start_price,
+                    floor_price,
+                    decrement_rate,
+                    decrement_interval,
+                    total_quantity,
+                };
+
+                // Parse the module ID from the constant
+                let module_id = ModuleId::from_str("95ba7951ed630e0ccf2094c2dbe12320877dec37fa7f5051e3fe9ff5ae564533c3a651d88772abc1a1b680feb5178a55e7157d1189f61ae9eb064ebbf964770400")
+                    .expect("Invalid module ID");
+
+                // Create a new application instance
+                let app_id = self.runtime.create_application::<FairdropAbi, (), InstantiationArgument>(
+                    module_id,
+                    &(), // No parameters
+                    &instantiation_argument,
+                    vec![], // No required application IDs
+                );
+
+                // Get and increment counter
+                let counter = *self.state.created_applications_counter.get();
+                self.state.created_applications_counter.set(counter + 1);
+
+                // Store the created application ID
+                self.state.created_applications.insert(&counter, app_id.forget_abi())
+                    .expect("Failed to store created application ID");
+            },
         }
     }
 
     async fn execute_message(&mut self, message: Message) {
+        // Messages execute on both the sender and receiver chains in Linera.
+        // We only want to process them on the creator chain where the auction state lives.
+        if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
+            // On subscriber/sender chains, messages are no-ops
+            return;
+        }
+
         match message {
             Message::PlaceBid { bidder, quantity } => {
-                // Messages are only sent to the creator chain, so we should be on it
-                // But let's verify just in case
-                if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
-                    panic!(
-                        "PlaceBid message received on wrong chain. Current: {:?}, Creator: {:?}",
-                        self.runtime.chain_id(),
-                        self.runtime.application_creator_chain_id()
-                    );
-                }
-
                 // Verify the message authentication
                 self.runtime
                     .check_account_permission(bidder)
@@ -176,15 +213,6 @@ impl Contract for FairdropContract {
             }
 
             Message::RequestInitialization => {
-                // Verify we're on the creator chain
-                if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
-                    panic!(
-                        "Subscription received on wrong chain. Current: {:?}, Creator: {:?}",
-                        self.runtime.chain_id(),
-                        self.runtime.application_creator_chain_id()
-                    );
-                }
-                
                 // Emit initialization event for the requesting chain
                 self.emit_initialization_event();
             }
