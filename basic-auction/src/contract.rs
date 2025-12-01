@@ -176,17 +176,17 @@ impl Contract for FairdropContract {
                 self.runtime.subscribe_to_events(creator_chain, app_id, AUCTION_STREAM.into());
 
                 // Request initialization event to get current state
-                // if self.runtime.chain_id() == creator_chain {
-                //     // On creator chain, emit directly
-                //     self.emit_initialization_event();
-                // } else {
-                //     // On subscriber chain, send message to creator chain
-                //     let message = Message::RequestInitialization;
-                //     self.runtime
-                //         .prepare_message(message)
-                //         .with_tracking()
-                //         .send_to(creator_chain);
-                // }
+                if self.runtime.chain_id() == creator_chain {
+                    // On creator chain, emit directly
+                    self.emit_initialization_event();
+                } else {
+                    // On subscriber chain, send message to creator chain
+                    let message = Message::RequestInitialization;
+                    self.runtime
+                        .prepare_message(message)
+                        .with_tracking()
+                        .send_to(creator_chain);
+                }
             },
 
             Operation::Unsubscribe => {
@@ -221,7 +221,7 @@ impl Contract for FairdropContract {
                 // Validate auction timing
                 let current_time = self.runtime.system_time();
                 let start_time = self.parameters().start_timestamp;
-                let end_time = self.parameters().end_timestamp;
+                // let end_time = self.parameters().end_timestamp;
 
                 if current_time < start_time {
                     self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has not started yet");
@@ -229,16 +229,16 @@ impl Contract for FairdropContract {
                 }
 
                 // Automatic time-based finalization
-                if current_time >= end_time {
-                    // Auto-finalize if not already finalized
-                    if *self.state.status.get() == AuctionStatus::Active {
-                        let clearing_price = self.calculate_current_price();
-                        self.state.clearing_price.set(Some(clearing_price));
-                        self.state.status.set(AuctionStatus::Ended);
-                    }
-                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has ended (time expired)");
-                    return;
-                }
+                // if current_time >= end_time {
+                //     // Auto-finalize if not already finalized
+                //     if *self.state.status.get() == AuctionStatus::Active {
+                //         let clearing_price = self.calculate_current_price();
+                //         self.state.clearing_price.set(Some(clearing_price));
+                //         self.state.status.set(AuctionStatus::Ended);
+                //     }
+                //     self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has ended (time expired)");
+                //     return;
+                // }
 
                 // Update status if needed (from Scheduled to Active)
                 if *self.state.status.get() == AuctionStatus::Scheduled {
