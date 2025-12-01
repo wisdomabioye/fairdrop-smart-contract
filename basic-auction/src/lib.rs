@@ -1,17 +1,6 @@
 // Copyright (c) Fairdrop Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-/*!
-# Fairdrop Stage 1: Basic Auction MVP
-
-This is the first stage in building the Fairdrop auction system on Linera.
-It implements core auction logic without external dependencies:
-- Auction initialization with descending price parameters
-- Bid placement (tracking quantity, no actual payment yet)
-- Automatic price calculation based on elapsed time
-- Query interface for current price and auction state
-*/
-
 use async_graphql::{Enum, Request, Response, SimpleObject};
 use linera_sdk::{
     graphql::GraphQLMutationRoot,
@@ -64,6 +53,9 @@ pub struct InstantiationArgument {
     /// When the auction starts (allows for scheduled/upcoming auctions)
     pub start_timestamp: Timestamp,
 
+    /// When the auction ends (time-based finalization)
+    pub end_timestamp: Timestamp,
+
     /// Starting price per unit
     pub start_price: Amount,
 
@@ -89,6 +81,9 @@ pub struct AuctionParameters {
     /// When the auction starts (allows for scheduled/upcoming auctions)
     pub start_timestamp: Timestamp,
 
+    /// When the auction ends (time-based finalization)
+    pub end_timestamp: Timestamp,
+
     /// Starting price per unit
     pub start_price: Amount,
 
@@ -109,7 +104,6 @@ pub struct AuctionParameters {
 #[derive(Debug, Deserialize, Serialize, GraphQLMutationRoot)]
 pub enum Operation {
     /// Place a bid for a specified quantity at the current price
-    /// Note: In Stage 1, no actual payment is made - we just track the bid
     PlaceBid {
         /// Quantity of units to purchase
         quantity: u64
@@ -122,36 +116,48 @@ pub enum Operation {
     /// Unsubscribe from auction updates
     Unsubscribe,
 
-    /// Create a new instance of this application with the given parameters
-    // CreateApplication {
-    //     /// When the auction starts (allows for scheduled/upcoming auctions)
-    //     start_timestamp: Timestamp,
-    //     /// Starting price per unit
-    //     start_price: Amount,
-    //     /// Minimum floor price
-    //     floor_price: Amount,
-    //     /// Amount to decrease price per interval
-    //     decrement_rate: Amount,
-    //     /// Time interval between price decrements (in seconds)
-    //     decrement_interval: u64,
-    //     /// Total quantity available for auction
-    //     total_quantity: u64,
-    // }
+    // Future: Create a new instance of this application with the given parameters
+    // (Dynamic application creation not implemented yet)
+    // CreateApplication { ... }
 }
 
-/// Messages for cross-chain communication
+/// Messages for cross-chain communication (Two-Contract Pattern)
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Message {
-    /// Place a bid from another chain - forwarded to the auction creator chain
-    PlaceBid {
+    /// User → Auction: Submit a bid at current price
+    BidSubmission {
         /// The bidder placing the bid
         bidder: AccountOwner,
         /// Quantity of units to purchase
         quantity: u64,
+        /// Chain ID where the bidder is located (for response routing)
+        bidder_chain: linera_sdk::linera_base_types::ChainId,
+        /// Bid ID from the bidder chain (for matching responses)
+        bid_id: u64,
     },
 
-    /// Request initialization event from creator chain
-    /// Sent when a non-creator chain subscribes to auction events
+    /// Auction → User: Bid accepted, record bid_price and clearing_price
+    BidAccepted {
+        /// Bid ID from the original submission (for matching)
+        bid_id: u64,
+        /// Quantity that was accepted
+        quantity: u64,
+        /// Price when bid was placed
+        bid_price: Amount,
+        /// Clearing price if auction ended, None if still active
+        clearing_price: Option<Amount>,
+    },
+
+    /// Auction → User: Bid rejected (quantity exceeded or auction ended)
+    BidRejected {
+        /// Bid ID from the original submission (for matching)
+        bid_id: u64,
+        /// Quantity that was rejected
+        quantity: u64,
+        /// Reason for rejection
+        reason: String,
+    },
+
     RequestInitialization,
 }
 
@@ -163,6 +169,7 @@ pub enum AuctionEvent {
     AuctionInitialized {
         owner: AccountOwner,
         start_timestamp: Timestamp,
+        end_timestamp: Timestamp,
         start_price: Amount,
         floor_price: Amount,
         decrement_rate: Amount,
@@ -174,12 +181,20 @@ pub enum AuctionEvent {
         timestamp: Timestamp,
     },
 
-    /// A bid was placed
-    BidPlaced {
+    /// A bid was accepted by the auction
+    BidAccepted {
         bidder: AccountOwner,
         quantity: u64,
+        bid_price: Amount,
         new_total_sold: u64,
-        current_price: Amount,
+        timestamp: Timestamp,
+    },
+
+    /// A bid was rejected by the auction
+    BidRejected {
+        bidder: AccountOwner,
+        quantity: u64,
+        reason: String,
         timestamp: Timestamp,
     },
 

@@ -11,7 +11,7 @@ use async_graphql::{Context, Object, Request, Response, Schema, Subscription};
 use fairdrop_basic::{FairdropAbi, Operation};
 use linera_sdk::{
     graphql::GraphQLMutationRoot as _,
-    linera_base_types::{Amount, ApplicationId, ChainId, WithServiceAbi},
+    linera_base_types::{Amount, ChainId, WithServiceAbi},
     views::View,
     Service, ServiceRuntime,
 };
@@ -255,6 +255,7 @@ impl QueryRoot {
         Some(AuctionInfo {
             owner: params.owner,
             start_timestamp: params.start_timestamp,
+            end_timestamp: params.end_timestamp,
             start_price: params.start_price,
             floor_price: params.floor_price,
             decrement_rate: params.decrement_rate,
@@ -269,28 +270,37 @@ impl QueryRoot {
         })
     }
 
-    /// Get all created application IDs
-    /// Returns a list of all applications created via the CreateApplication operation
-    // async fn created_applications(&self) -> Vec<ApplicationId> {
-    //     let mut app_ids = Vec::new();
+    // Future: Get all created application IDs
+    // async fn created_applications(&self) -> Vec<ApplicationId> { ... }
 
-    //     // Get the current counter to know how many apps were created
-    //     let counter = *self.auction_state.created_applications_counter.get();
+    // Future: Get the count of created applications
+    // async fn created_applications_count(&self) -> u64 { ... }
 
-    //     // Iterate through all created applications
-    //     for i in 0..counter {
-    //         if let Ok(Some(app_id)) = self.auction_state.created_applications.get(&i).await {
-    //             app_ids.push(app_id);
-    //         }
-    //     }
+    /// Get all bids placed by this chain (bidder-side state)
+    /// Returns list of bids with their status, prices, and refund info
+    async fn my_bids(&self) -> Vec<state::UserBid> {
+        let mut bids = Vec::new();
+        let bid_counter = *self.auction_state.bid_counter.get();
 
-    //     app_ids
-    // }
+        for bid_id in 0..bid_counter {
+            if let Ok(Some(bid)) = self.auction_state.my_bids.get(&bid_id).await {
+                bids.push(bid);
+            }
+        }
 
-    // /// Get the count of created applications
-    // async fn created_applications_count(&self) -> u64 {
-    //     *self.auction_state.created_applications_counter.get()
-    // }
+        bids
+    }
+
+    /// Get total refund owed to this chain (bidder-side state)
+    /// This is calculated when BidAccepted messages are received with clearing_price
+    async fn my_refund(&self) -> Amount {
+        *self.auction_state.refund_owed.get()
+    }
+
+    /// Get count of bids placed by this chain
+    async fn my_bids_count(&self) -> u64 {
+        *self.auction_state.bid_counter.get()
+    }
 }
 
 /// GraphQL subscription methods
