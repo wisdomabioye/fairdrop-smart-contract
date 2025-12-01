@@ -52,6 +52,7 @@ Auction for 250,000 tokens:
 linera publish-and-create \
   --json-argument '{
   "start_timestamp": 1762598125457000,
+  "end_timestamp": 1762898125457000,
   "start_price": "100.",
   "floor_price": "1.",
   "decrement_rate": "1.",
@@ -101,9 +102,9 @@ where:
 
 - ❌ No actual token payments (just tracking quantities)
 - ❌ No token/NFT distribution
-- ❌ No refunds or clearing price calculation
-- ❌ No cross-chain bidding
-- ❌ No auction finalization or claims
+- ✅ No refunds or clearing price calculation
+- ✅ No cross-chain bidding
+- ✅ No auction finalization or claims
 
 **These features will be added in subsequent stages:**
 - Stage 2: Payment token integration
@@ -143,6 +144,9 @@ By completing Stage 1, we have:
 - ✅ GraphQL query interface
 - ✅ Operation execution and validation
 - ✅ Basic auction mechanics
+- ✅ No refunds or clearing price calculation
+- ✅ No cross-chain bidding
+- ✅ No auction finalization or claims
 
 ## Support
 
