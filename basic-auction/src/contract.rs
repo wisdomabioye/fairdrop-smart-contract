@@ -98,12 +98,24 @@ impl Contract for FairdropContract {
         self.state.status.set(status);
         self.state.quantity_sold.set(0);
 
-        // Subscribe to own stream
+        let creator_chain = self.runtime.application_creator_chain_id();
         let chain_id = self.runtime.chain_id();
         let app_id = self.runtime.application_id().forget_abi();
-        self.runtime.subscribe_to_events(chain_id, app_id, AUCTION_STREAM.into());
+        
+        self.runtime.subscribe_to_events(creator_chain, app_id, AUCTION_STREAM.into());
 
-        self.emit_initialization_event();
+        // Request initialization event to get current state
+        if chain_id == creator_chain {
+            // On creator chain, emit directly
+            self.emit_initialization_event();
+        } else {
+            // On subscriber chain, send message to creator chain
+            let message = Message::RequestInitialization;
+            self.runtime
+                .prepare_message(message)
+                .with_tracking()
+                .send_to(creator_chain);
+        }
     }
 
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
@@ -183,7 +195,7 @@ impl Contract for FairdropContract {
                 let app_id = self.runtime.application_id().forget_abi();
                 self.runtime.unsubscribe_from_events(creator_chain, app_id, AUCTION_STREAM.into());
 
-                // Clear cached state
+                // Clean up cached state
                 self.state.cached_state.set(None);
             }
 
@@ -212,7 +224,7 @@ impl Contract for FairdropContract {
                 let end_time = self.parameters().end_timestamp;
 
                 if current_time < start_time {
-                    self.send_rejection(bidder_chain, bid_id, quantity, "Auction has not started yet");
+                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has not started yet");
                     return;
                 }
 
@@ -224,7 +236,7 @@ impl Contract for FairdropContract {
                         self.state.clearing_price.set(Some(clearing_price));
                         self.state.status.set(AuctionStatus::Ended);
                     }
-                    self.send_rejection(bidder_chain, bid_id, quantity, "Auction has ended (time expired)");
+                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has ended (time expired)");
                     return;
                 }
 
@@ -235,7 +247,7 @@ impl Contract for FairdropContract {
 
                 // Check if auction is active
                 if !self.state.status.get().is_active() {
-                    self.send_rejection(bidder_chain, bid_id, quantity, "Auction is not active");
+                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction is not active");
                     return;
                 }
 
@@ -244,13 +256,14 @@ impl Contract for FairdropContract {
                 let total_quantity = self.parameters().total_quantity;
 
                 if quantity == 0 {
-                    self.send_rejection(bidder_chain, bid_id, quantity, "Bid quantity must be greater than zero");
+                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Bid quantity must be greater than zero");
                     return;
                 }
 
                 if quantity_sold + quantity > total_quantity {
                     let available = total_quantity - quantity_sold;
                     self.send_rejection(
+                        bidder,
                         bidder_chain,
                         bid_id,
                         quantity,
@@ -290,6 +303,16 @@ impl Contract for FairdropContract {
                 self.runtime
                     .prepare_message(accept_message)
                     .send_to(bidder_chain);
+
+                // Emit event for subscribers/transparency
+                let event = AuctionEvent::BidAccepted {
+                    bidder,
+                    quantity,
+                    bid_price: current_price,
+                    new_total_sold: new_quantity_sold,
+                    timestamp: current_time,
+                };
+                self.runtime.emit(AUCTION_STREAM.into(), &event);
             }
 
             // Bidder-side message handlers
@@ -376,21 +399,26 @@ impl Contract for FairdropContract {
                         self.state.cached_state.set(Some(cached));
                     }
 
-                    AuctionEvent::BidPlaced {
+                    AuctionEvent::BidAccepted {
                         new_total_sold,
-                        current_price,
+                        bid_price,
                         timestamp,
                         ..
                     } => {
                         // Update cached quantity and price
                         if let Some(mut cached) = self.state.cached_state.get().clone() {
                             cached.quantity_sold = new_total_sold;
-                            cached.current_price = current_price;
+                            cached.current_price = bid_price;
                             cached.last_updated = timestamp;
                             self.state.cached_state.set(Some(cached));
                         }
                         // If no cached state exists, ignore the update
                         // (should have received AuctionInitialized first)
+                    }
+
+                    AuctionEvent::BidRejected { .. } => {
+                        // No state update needed for rejections
+                        // Just for transparency/logging
                     }
 
                     AuctionEvent::StatusChanged {
@@ -418,13 +446,15 @@ impl FairdropContract {
     async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
         let timestamp = match &event {
             AuctionEvent::AuctionInitialized { timestamp, .. } => *timestamp,
-            AuctionEvent::BidPlaced { timestamp, .. } => *timestamp,
+            AuctionEvent::BidAccepted { timestamp, .. } => *timestamp,
+            AuctionEvent::BidRejected { timestamp, .. } => *timestamp,
             AuctionEvent::StatusChanged { timestamp, .. } => *timestamp,
         };
 
         let event_type = match &event {
             AuctionEvent::AuctionInitialized { .. } => "AuctionInitialized",
-            AuctionEvent::BidPlaced { .. } => "BidPlaced",
+            AuctionEvent::BidAccepted { .. } => "BidAccepted",
+            AuctionEvent::BidRejected { .. } => "BidRejected",
             AuctionEvent::StatusChanged { .. } => "StatusChanged",
         };
 
@@ -513,8 +543,8 @@ impl FairdropContract {
             .expect("Application not instantiated. Parameters are None. Make sure instantiate() was called first.")
     }
 
-    /// Helper method to send bid rejection message
-    fn send_rejection(&mut self, bidder_chain: linera_sdk::linera_base_types::ChainId, bid_id: u64, quantity: u64, reason: &str) {
+    /// Helper method to send bid rejection message and emit event
+    fn send_rejection(&mut self, bidder: AccountOwner, bidder_chain: linera_sdk::linera_base_types::ChainId, bid_id: u64, quantity: u64, reason: &str) {
         let reject_message = Message::BidRejected {
             bid_id,
             quantity,
@@ -524,6 +554,15 @@ impl FairdropContract {
         self.runtime
             .prepare_message(reject_message)
             .send_to(bidder_chain);
+
+        // Emit event for subscribers/transparency
+        let event = AuctionEvent::BidRejected {
+            bidder,
+            quantity,
+            reason: reason.to_string(),
+            timestamp: self.runtime.system_time(),
+        };
+        self.runtime.emit(AUCTION_STREAM.into(), &event);
     }
 
     /// Helper method to record a bid
@@ -777,6 +816,7 @@ mod tests {
 
         let valid_arg = InstantiationArgument {
             start_timestamp: Timestamp::from(1000000),
+            end_timestamp: Timestamp::from(10000000),
             start_price: Amount::from_tokens(100),
             floor_price: Amount::from_tokens(10),
             decrement_rate: Amount::from_tokens(1),
@@ -797,6 +837,7 @@ mod tests {
         let params = AuctionParameters {
             owner,
             start_timestamp: Timestamp::from(1000000),
+            end_timestamp: Timestamp::from(10000000),
             start_price: Amount::from_tokens(100),
             floor_price: Amount::from_tokens(10),
             decrement_rate: Amount::from_tokens(1),

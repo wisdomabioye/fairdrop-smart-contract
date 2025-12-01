@@ -181,12 +181,20 @@ pub enum AuctionEvent {
         timestamp: Timestamp,
     },
 
-    /// A bid was placed
-    BidPlaced {
+    /// A bid was accepted by the auction
+    BidAccepted {
         bidder: AccountOwner,
         quantity: u64,
+        bid_price: Amount,
         new_total_sold: u64,
-        current_price: Amount,
+        timestamp: Timestamp,
+    },
+
+    /// A bid was rejected by the auction
+    BidRejected {
+        bidder: AccountOwner,
+        quantity: u64,
+        reason: String,
         timestamp: Timestamp,
     },
 

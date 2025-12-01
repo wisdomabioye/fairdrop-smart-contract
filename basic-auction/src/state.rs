@@ -79,7 +79,7 @@ pub struct StoredStreamEvent {
     pub chain_id: ChainId,
     /// Timestamp of the event in microseconds
     pub timestamp: u64,
-    /// Event type: "AuctionInitialized", "BidPlaced", or "StatusChanged"
+    /// Event type: "AuctionInitialized", "BidAccepted", "BidRejected", or "StatusChanged"
     pub event_type: String,
     /// JSON serialized event data
     pub event_data: String,
@@ -117,6 +117,7 @@ pub struct CachedAuctionState {
 pub struct AuctionInfo {
     pub owner: AccountOwner,
     pub start_timestamp: Timestamp,
+    pub end_timestamp: Timestamp,
     pub start_price: Amount,
     pub floor_price: Amount,
     pub decrement_rate: Amount,

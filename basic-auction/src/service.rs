@@ -255,6 +255,7 @@ impl QueryRoot {
         Some(AuctionInfo {
             owner: params.owner,
             start_timestamp: params.start_timestamp,
+            end_timestamp: params.end_timestamp,
             start_price: params.start_price,
             floor_price: params.floor_price,
             decrement_rate: params.decrement_rate,
