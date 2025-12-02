@@ -52,6 +52,7 @@ cargo build --release --target wasm32-unknown-unknown
 linera publish-and-create \
   --json-argument '{
   "start_timestamp": 1762598125457000,
+  "end_timestamp": 1762599125457000,
   "start_price": "100.",
   "floor_price": "1.",
   "decrement_rate": "1.",
@@ -68,18 +69,17 @@ linera publish-and-create \
 **Changes**:
 1. Copy all files from basic-auction
 2. Add `ApplicationId<FungibleTokenAbi>` as Parameters
-3. Call fungible token for actual payments
-4. Track `amount_paid` in ParticipantInfo
+3. Call fungible token for actual payments  (Pending)
+4. Track `amount_paid` in ParticipantInfo (done)
 
 ---
 
 ### Stage 3: Distribution & Claiming
 
 **Changes**:
-1. Add `FinalizeAuction` operation
-2. Add `Claim` operation
-3. Calculate clearing price
-4. Handle refunds (paid at bid price, refund difference)
+1. Add `Claim` operation (Added, pending implementation) (Done)
+3. Calculate clearing price (Done)
+4. Handle refunds (paid at bid price, refund difference) (Done)
 
 ---
 
