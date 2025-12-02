@@ -96,15 +96,24 @@ where:
 - **Active**: Auction is running and accepting bids
 - **Ended**: Auction sold out (quantity_sold >= total_quantity)
 
+## Architecture Evolution
+
+### Initial Implementation Issue
+
+**Problem with Two-Way Messaging**: The initial implementation used return messages (`BidAccepted`/`BidRejected`) sent back to bidder chains. These messages could sit in inboxes indefinitely if bidders didn't process them, causing stale bid status.
+
+**Solution**: Redesigned to use **one-way messaging + event subscription**:
+- Bidders send messages to creator chain (PlaceBid, Claim)
+- Creator chain emits events to all subscribers (BidAccepted, BidRejected, ClaimProcessed)
+- Events are automatically processed via `process_streams` - no inbox dependency
+- Bid data indexed by owner for O(1) lookup
+
 ## Limitations (Stage 1 Only)
 
 ⚠️ **This is MVP implementation. The following features are NOT included in Stage 1:**
 
 - ❌ No actual token payments (just tracking quantities)
 - ❌ No token/NFT distribution
-- ✅ No refunds or clearing price calculation
-- ✅ No cross-chain bidding
-- ✅ No auction finalization or claims
 
 **These features will be added in subsequent stages:**
 - Stage 2: Payment token integration

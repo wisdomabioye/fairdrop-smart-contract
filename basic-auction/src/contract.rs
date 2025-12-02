@@ -126,7 +126,6 @@ impl Contract for FairdropContract {
                     .authenticated_signer()
                     .expect("Bid must be authenticated");
 
-                // Two-Contract Pattern: Record pending bid locally, then send to auction chain
                 let auction_chain = self.runtime.application_creator_chain_id();
                 let bidder_chain = self.runtime.chain_id();
 
@@ -136,31 +135,38 @@ impl Contract for FairdropContract {
                     "Cannot place bids directly on the auction creator chain. Please place bids from your own chain."
                 );
 
-                let current_time = self.runtime.system_time();
-
-                // Record bid locally with Pending status
-                // Price will be filled in when we receive BidAccepted message
-                let bid_id = *self.state.bid_counter.get();
-                self.state.bid_counter.set(bid_id + 1);
-
-                let user_bid = state::UserBid {
-                    quantity,
-                    bid_price: Amount::ZERO, // Will be updated when BidAccepted received
-                    timestamp: current_time,
-                    status: state::BidStatus::Pending,
-                    clearing_price: None,
-                };
-
-                self.state.my_bids.insert(&bid_id, user_bid)
-                    .expect("Failed to store bid locally");
-
-                // Send message to auction chain with bid_id for matching
+                // Send one-way message to auction chain
+                // Response will come via events (no return message)
                 let message = Message::BidSubmission {
                     bidder,
                     quantity,
-                    bidder_chain,
-                    bid_id,
                 };
+
+                self.runtime
+                    .prepare_message(message)
+                    .with_authentication()
+                    .with_tracking()
+                    .send_to(auction_chain);
+            },
+
+            Operation::Claim => {
+                let bidder = self
+                    .runtime
+                    .authenticated_signer()
+                    .expect("Claim must be authenticated");
+
+                let auction_chain = self.runtime.application_creator_chain_id();
+                let bidder_chain = self.runtime.chain_id();
+
+                // Prevent claiming directly on creator chain (must come from user chains)
+                assert_ne!(
+                    auction_chain, bidder_chain,
+                    "Cannot claim directly on the auction creator chain. Please claim from your own chain."
+                );
+
+                // Send claim request to auction chain
+                // Response will come via events (no return message)
+                let message = Message::ClaimRequest { bidder };
 
                 self.runtime
                     .prepare_message(message)
@@ -206,8 +212,8 @@ impl Contract for FairdropContract {
 
     async fn execute_message(&mut self, message: Message) {
         match message {
-            // Two-Contract Pattern: Bid submission from bidder chain
-            Message::BidSubmission { bidder, quantity, bidder_chain, bid_id } => {
+            // Bid submission from bidder chain (one-way message)
+            Message::BidSubmission { bidder, quantity } => {
                 // Only process on auction creator chain
                 if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
                     return;
@@ -221,24 +227,11 @@ impl Contract for FairdropContract {
                 // Validate auction timing
                 let current_time = self.runtime.system_time();
                 let start_time = self.parameters().start_timestamp;
-                // let end_time = self.parameters().end_timestamp;
 
                 if current_time < start_time {
-                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has not started yet");
+                    self.emit_rejection(bidder, quantity, "Auction has not started yet");
                     return;
                 }
-
-                // Automatic time-based finalization
-                // if current_time >= end_time {
-                //     // Auto-finalize if not already finalized
-                //     if *self.state.status.get() == AuctionStatus::Active {
-                //         let clearing_price = self.calculate_current_price();
-                //         self.state.clearing_price.set(Some(clearing_price));
-                //         self.state.status.set(AuctionStatus::Ended);
-                //     }
-                //     self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction has ended (time expired)");
-                //     return;
-                // }
 
                 // Update status if needed (from Scheduled to Active)
                 if *self.state.status.get() == AuctionStatus::Scheduled {
@@ -247,7 +240,7 @@ impl Contract for FairdropContract {
 
                 // Check if auction is active
                 if !self.state.status.get().is_active() {
-                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Auction is not active");
+                    self.emit_rejection(bidder, quantity, "Auction is not active");
                     return;
                 }
 
@@ -256,16 +249,14 @@ impl Contract for FairdropContract {
                 let total_quantity = self.parameters().total_quantity;
 
                 if quantity == 0 {
-                    self.send_rejection(bidder, bidder_chain, bid_id, quantity, "Bid quantity must be greater than zero");
+                    self.emit_rejection(bidder, quantity, "Bid quantity must be greater than zero");
                     return;
                 }
 
                 if quantity_sold + quantity > total_quantity {
                     let available = total_quantity - quantity_sold;
-                    self.send_rejection(
+                    self.emit_rejection(
                         bidder,
-                        bidder_chain,
-                        bid_id,
                         quantity,
                         &format!("Insufficient quantity. Requested: {}, Available: {}", quantity, available)
                     );
@@ -292,48 +283,74 @@ impl Contract for FairdropContract {
                     None
                 };
 
-                // Send acceptance message back to bidder chain with bid_id
-                let accept_message = Message::BidAccepted {
-                    bid_id,
-                    quantity,
-                    bid_price: current_price,
-                    clearing_price,
-                };
-
-                self.runtime
-                    .prepare_message(accept_message)
-                    .send_to(bidder_chain);
-
-                // Emit event for subscribers/transparency
+                // Emit acceptance event (subscribers will receive this)
                 let event = AuctionEvent::BidAccepted {
                     bidder,
                     quantity,
                     bid_price: current_price,
+                    clearing_price,
                     new_total_sold: new_quantity_sold,
                     timestamp: current_time,
                 };
                 self.runtime.emit(AUCTION_STREAM.into(), &event);
             }
 
-            // Bidder-side message handlers
-            Message::BidAccepted { bid_id, quantity, bid_price, clearing_price } => {
-                // Only process on bidder chains (not auction chain)
-                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
+            Message::ClaimRequest { bidder } => {
+                // Only process on auction creator chain
+                if self.runtime.chain_id() != self.runtime.application_creator_chain_id() {
                     return;
                 }
 
-                // Update the specific bid using bid_id
-                self.handle_bid_accepted(bid_id, quantity, bid_price, clearing_price).await;
-            }
+                // Verify authentication
+                self.runtime
+                    .check_account_permission(bidder)
+                    .expect("Claim must be authenticated");
 
-            Message::BidRejected { bid_id, quantity, reason } => {
-                // Only process on bidder chains (not auction chain)
-                if self.runtime.chain_id() == self.runtime.application_creator_chain_id() {
-                    return;
-                }
+                // Check auction has ended
+                let status = *self.state.status.get();
+                assert!(
+                    status.is_ended(),
+                    "Cannot claim until auction ends"
+                );
 
-                // Mark the specific bid as rejected using bid_id
-                self.handle_bid_rejected(bid_id, quantity, reason).await;
+                // Get clearing price
+                let clearing_price = self.state.clearing_price.get()
+                    .expect("Clearing price must be set when auction ends");
+
+                // Get participant info
+                let participant = self.state.participants.get(&bidder).await
+                    .expect("Failed to read participant")
+                    .expect("No bids found for this bidder");
+
+                // Check if already claimed
+                assert!(
+                    !participant.has_claimed,
+                    "Already claimed"
+                );
+
+                // Calculate refund
+                let amount_owed = clearing_price.saturating_mul(participant.total_quantity as u128);
+                let refund = participant.total_paid.saturating_sub(amount_owed);
+
+                // Mark as claimed
+                let mut updated_participant = participant.clone();
+                updated_participant.has_claimed = true;
+                self.state.participants.insert(&bidder, updated_participant)
+                    .expect("Failed to update participant");
+
+                // Emit claim event
+                let event = AuctionEvent::ClaimProcessed {
+                    bidder,
+                    total_quantity: participant.total_quantity,
+                    total_paid: participant.total_paid,
+                    clearing_price,
+                    refund,
+                    timestamp: self.runtime.system_time(),
+                };
+                self.runtime.emit(AUCTION_STREAM.into(), &event);
+
+                // TODO: Transfer tokens and refund to bidder
+                // This will be implemented in later stages with token integration
             }
 
             Message::RequestInitialization => {
@@ -360,9 +377,6 @@ impl Contract for FairdropContract {
                 let event: AuctionEvent = self
                     .runtime
                     .read_event(update.chain_id, AUCTION_STREAM.into(), index);
-
-                // Store event for service layer queries
-                self.store_auction_event_for_service(update.chain_id, event.clone()).await;
 
                 // Update cached state based on event type
                 match event {
@@ -400,10 +414,12 @@ impl Contract for FairdropContract {
                     }
 
                     AuctionEvent::BidAccepted {
-                        new_total_sold,
+                        bidder,
+                        quantity,
                         bid_price,
+                        clearing_price,
+                        new_total_sold,
                         timestamp,
-                        ..
                     } => {
                         // Update cached quantity and price
                         if let Some(mut cached) = self.state.cached_state.get().clone() {
@@ -412,13 +428,63 @@ impl Contract for FairdropContract {
                             cached.last_updated = timestamp;
                             self.state.cached_state.set(Some(cached));
                         }
-                        // If no cached state exists, ignore the update
-                        // (should have received AuctionInitialized first)
+
+                        // Store bid info indexed by bidder
+                        let bid_info = state::BidInfo {
+                            quantity,
+                            bid_price,
+                            timestamp,
+                            status: state::BidStatus::Accepted,
+                            clearing_price,
+                        };
+
+                        // Get existing bids for this bidder or create new vec
+                        let mut bids = self.state.bids_by_owner
+                            .get(&bidder)
+                            .await
+                            .expect("Failed to read bids")
+                            .unwrap_or_default();
+
+                        bids.push(bid_info);
+
+                        self.state.bids_by_owner
+                            .insert(&bidder, bids)
+                            .expect("Failed to store bid");
                     }
 
-                    AuctionEvent::BidRejected { .. } => {
-                        // No state update needed for rejections
-                        // Just for transparency/logging
+                    AuctionEvent::BidRejected {
+                        bidder,
+                        quantity,
+                        reason: _,
+                        timestamp,
+                    } => {
+                        // Store rejected bid info
+                        let bid_info = state::BidInfo {
+                            quantity,
+                            bid_price: Amount::ZERO,
+                            timestamp,
+                            status: state::BidStatus::Rejected,
+                            clearing_price: None,
+                        };
+
+                        // Get existing bids for this bidder or create new vec
+                        let mut bids = self.state.bids_by_owner
+                            .get(&bidder)
+                            .await
+                            .expect("Failed to read bids")
+                            .unwrap_or_default();
+
+                        bids.push(bid_info);
+
+                        self.state.bids_by_owner
+                            .insert(&bidder, bids)
+                            .expect("Failed to store bid");
+                    }
+
+                    AuctionEvent::ClaimProcessed { .. } => {
+                        // Claim processed on creator chain
+                        // Note: Actual token/refund transfer happens on creator chain
+                        // Subscriber chains receive this event for transparency
                     }
 
                     AuctionEvent::StatusChanged {
@@ -431,8 +497,6 @@ impl Contract for FairdropContract {
                             cached.last_updated = timestamp;
                             self.state.cached_state.set(Some(cached));
                         }
-                        // If no cached state exists, ignore the update
-                        // (should have received AuctionInitialized first)
                     }
                 }
             }
@@ -441,40 +505,6 @@ impl Contract for FairdropContract {
 }
 
 impl FairdropContract {
-    /// Stores auction event for service layer queries (Testing purpose only)
-    /// This allows the service to access historical events received via streams
-    async fn store_auction_event_for_service(&mut self, chain_id: linera_sdk::linera_base_types::ChainId, event: AuctionEvent) {
-        let timestamp = match &event {
-            AuctionEvent::AuctionInitialized { timestamp, .. } => *timestamp,
-            AuctionEvent::BidAccepted { timestamp, .. } => *timestamp,
-            AuctionEvent::BidRejected { timestamp, .. } => *timestamp,
-            AuctionEvent::StatusChanged { timestamp, .. } => *timestamp,
-        };
-
-        let event_type = match &event {
-            AuctionEvent::AuctionInitialized { .. } => "AuctionInitialized",
-            AuctionEvent::BidAccepted { .. } => "BidAccepted",
-            AuctionEvent::BidRejected { .. } => "BidRejected",
-            AuctionEvent::StatusChanged { .. } => "StatusChanged",
-        };
-
-        // Get and increment counter
-        let counter = *self.state.stream_event_counter.get();
-        self.state.stream_event_counter.set(counter + 1);
-
-        // Create wrapper with metadata
-        let wrapper = state::StoredStreamEvent {
-            chain_id,
-            timestamp: timestamp.micros(),
-            event_type: event_type.to_string(),
-            event_data: serde_json::to_string(&event).unwrap_or_default(),
-        };
-
-        // Serialize wrapper to JSON for storage
-        if let Ok(wrapper_json) = serde_json::to_string(&wrapper) {
-            let _ = self.state.stream_events.insert(&counter, wrapper_json);
-        }
-    }
 
     /// Emits an initialization event with current auction state
     /// Should only be called on the creator chain
@@ -543,19 +573,8 @@ impl FairdropContract {
             .expect("Application not instantiated. Parameters are None. Make sure instantiate() was called first.")
     }
 
-    /// Helper method to send bid rejection message and emit event
-    fn send_rejection(&mut self, bidder: AccountOwner, bidder_chain: linera_sdk::linera_base_types::ChainId, bid_id: u64, quantity: u64, reason: &str) {
-        let reject_message = Message::BidRejected {
-            bid_id,
-            quantity,
-            reason: reason.to_string(),
-        };
-
-        self.runtime
-            .prepare_message(reject_message)
-            .send_to(bidder_chain);
-
-        // Emit event for subscribers/transparency
+    /// Helper method to emit bid rejection event
+    fn emit_rejection(&mut self, bidder: AccountOwner, quantity: u64, reason: &str) {
         let event = AuctionEvent::BidRejected {
             bidder,
             quantity,
@@ -566,68 +585,31 @@ impl FairdropContract {
     }
 
     /// Helper method to record a bid
-    async fn record_bid(&mut self, bidder: AccountOwner, quantity: u64, _bid_price: Amount) {
+    async fn record_bid(&mut self, bidder: AccountOwner, quantity: u64, bid_price: Amount) {
         let current_time = self.runtime.system_time();
-        let participant_info = ParticipantInfo {
-            quantity,
-            bid_timestamp: current_time,
-        };
+        let amount_paid = bid_price.saturating_mul(quantity as u128);
 
         // Update or add participant info
         let existing = self.state.participants.get(&bidder).await
             .expect("Failed to read participant info");
 
         if let Some(mut existing_info) = existing {
-            // Update existing bid - accumulate quantity
-            existing_info.quantity += quantity;
+            // Update existing - accumulate quantity and total paid
+            existing_info.total_quantity += quantity;
+            existing_info.total_paid = existing_info.total_paid.saturating_add(amount_paid);
             existing_info.bid_timestamp = current_time;
             self.state.participants.insert(&bidder, existing_info)
                 .expect("Failed to update participant");
         } else {
             // New participant
+            let participant_info = ParticipantInfo {
+                total_quantity: quantity,
+                total_paid: amount_paid,
+                has_claimed: false,
+                bid_timestamp: current_time,
+            };
             self.state.participants.insert(&bidder, participant_info)
                 .expect("Failed to insert participant");
-        }
-    }
-
-    /// Handle BidAccepted message on bidder chain
-    async fn handle_bid_accepted(&mut self, bid_id: u64, quantity: u64, bid_price: Amount, clearing_price: Option<Amount>) {
-        // Get the specific bid by ID
-        if let Ok(Some(mut bid)) = self.state.my_bids.get(&bid_id).await {
-            // Verify this is the right bid (defensive check)
-            if bid.quantity == quantity && bid.status == state::BidStatus::Pending {
-                // Update bid with accepted status and price info
-                bid.status = state::BidStatus::Accepted;
-                bid.bid_price = bid_price;
-                bid.clearing_price = clearing_price;
-
-                self.state.my_bids.insert(&bid_id, bid)
-                    .expect("Failed to update bid");
-
-                // If clearing price is set, calculate refund
-                if let Some(clearing) = clearing_price {
-                    let refund_per_unit = bid_price.saturating_sub(clearing);
-                    let total_refund = refund_per_unit.saturating_mul(quantity as u128);
-
-                    let current_refund = *self.state.refund_owed.get();
-                    self.state.refund_owed.set(current_refund.saturating_add(total_refund));
-                }
-            }
-        }
-    }
-
-    /// Handle BidRejected message on bidder chain
-    async fn handle_bid_rejected(&mut self, bid_id: u64, quantity: u64, _reason: String) {
-        // Get the specific bid by ID
-        if let Ok(Some(mut bid)) = self.state.my_bids.get(&bid_id).await {
-            // Verify this is the right bid (defensive check)
-            if bid.quantity == quantity && bid.status == state::BidStatus::Pending {
-                // Mark bid as rejected
-                bid.status = state::BidStatus::Rejected;
-
-                self.state.my_bids.insert(&bid_id, bid)
-                    .expect("Failed to update bid");
-            }
         }
     }
 
