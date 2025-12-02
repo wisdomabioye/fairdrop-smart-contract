@@ -3,20 +3,28 @@
 
 use async_graphql::SimpleObject;
 use linera_sdk::{
-    linera_base_types::{AccountOwner, Amount, ChainId, Timestamp},
+    linera_base_types::{AccountOwner, Amount, Timestamp},
     views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
 };
 use serde::{Deserialize, Serialize};
 
 use fairdrop_basic::{AuctionParameters, AuctionStatus};
    
-/// Information about a participant's bid in the auction
+/// Information about a participant's bids in the auction (Creator chain only)
+/// Tracks accumulated totals for claim/refund calculation
 #[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
 pub struct ParticipantInfo {
-    /// Quantity of units the participant wants to purchase
-    pub quantity: u64,
+    /// Total quantity won across all bids
+    pub total_quantity: u64,
 
-    /// Timestamp when the bid was placed
+    /// Total amount paid (sum of bid_price * quantity at time of each bid)
+    /// Used to calculate refund: refund = total_paid - (clearing_price * total_quantity)
+    pub total_paid: Amount,
+
+    /// Whether participant has claimed their allocation and refund
+    pub has_claimed: bool,
+
+    /// Timestamp of last bid
     pub bid_timestamp: Timestamp,
 }
 
@@ -24,6 +32,10 @@ pub struct ParticipantInfo {
 #[derive(RootView, SimpleObject)]
 #[view(context = ViewStorageContext)]
 pub struct AuctionState {
+    // ========================================
+    // CREATOR CHAIN ONLY
+    // ========================================
+
     /// Auction configuration parameters (stored at instantiation)
     /// Only set on the creator chain
     pub parameters: RegisterView<Option<AuctionParameters>>,
@@ -40,30 +52,17 @@ pub struct AuctionState {
     /// Clearing price (set when auction is finalized)
     pub clearing_price: RegisterView<Option<Amount>>,
 
-    /// Tracking who has claimed their tokens
-    pub has_claimed: MapView<AccountOwner, bool>,
-
-    /// Bidder-side state: User's bids on this chain (for two-contract pattern)
-    /// Stores bids placed by users on their own chains
-    pub my_bids: MapView<u64, UserBid>,
-
-    /// Bidder-side state: Counter for bid IDs
-    pub bid_counter: RegisterView<u64>,
-
-    /// Bidder-side state: Total refund owed to user (calculated when clearing_price received)
-    pub refund_owed: RegisterView<Amount>,
+    // ========================================
+    // SUBSCRIBER CHAINS ONLY
+    // ========================================
 
     /// Cached state for chains subscribed to updates
     /// This is only used on non-creator chains that have subscribed to events
     pub cached_state: RegisterView<Option<CachedAuctionState>>,
 
-    /// Counter for stream events (auto-incrementing)
-    pub stream_event_counter: RegisterView<u64>,
-
-    /// Stream events storage for service layer queries (Testing purpose only)
-    /// Key: event_counter (u64), Value: JSON with chain_id, timestamp, and event data
-    /// This allows the service to query historical events received via streams
-    pub stream_events: MapView<u64, String>,
+    /// Indexed bid storage by owner for O(1) lookup
+    /// Maps AccountOwner to all their bids (accepts + rejects)
+    pub bids_by_owner: MapView<AccountOwner, Vec<BidInfo>>,
 
     // Future: Counter for created applications (auto-incrementing)
     // pub created_applications_counter: RegisterView<u64>,
@@ -72,17 +71,32 @@ pub struct AuctionState {
     // pub created_applications: MapView<u64, ApplicationId>,
 }
 
-/// Wrapper for stored stream events with metadata
+/// Information about a single bid (stored in bids_by_owner)
 #[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
-pub struct StoredStreamEvent {
-    /// Chain ID where the event originated
-    pub chain_id: ChainId,
-    /// Timestamp of the event in microseconds
-    pub timestamp: u64,
-    /// Event type: "AuctionInitialized", "BidAccepted", "BidRejected", or "StatusChanged"
-    pub event_type: String,
-    /// JSON serialized event data
-    pub event_data: String,
+pub struct BidInfo {
+    /// Quantity of units bid for
+    pub quantity: u64,
+
+    /// Price when bid was placed
+    pub bid_price: Amount,
+
+    /// Timestamp when bid was placed
+    pub timestamp: Timestamp,
+
+    /// Status of this bid
+    pub status: BidStatus,
+
+    /// Clearing price (set when auction ends)
+    pub clearing_price: Option<Amount>,
+}
+
+/// Status of a bid
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, async_graphql::Enum)]
+pub enum BidStatus {
+    /// Bid was accepted by the auction
+    Accepted,
+    /// Bid was rejected by the auction
+    Rejected,
 }
 
 /// Cached auction state for chains subscribed to updates
@@ -131,38 +145,26 @@ pub struct AuctionInfo {
     pub time_until_next_decrement: Option<u64>,
 }
 
-// ============================================================================
-// Bidder-Side State Structures (Two-Contract Pattern)
-// ============================================================================
-
-/// Individual bid placed by a user
+/// Aggregated statistics for a bidder
 #[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
-pub struct UserBid {
-    /// Quantity of units bid for
-    pub quantity: u64,
+pub struct BidderSummary {
+    /// Total quantity across all accepted bids
+    pub total_quantity: u64,
 
-    /// Price when bid was placed (for refund calculation)
-    pub bid_price: Amount,
+    /// Total cost (sum of bid_price * quantity for accepted bids)
+    pub total_cost: Amount,
 
-    /// Timestamp when bid was placed
-    pub timestamp: Timestamp,
+    /// Total refund owed (if auction ended with clearing price)
+    pub total_refund: Amount,
 
-    /// Current status of this bid
-    pub status: BidStatus,
+    /// Net cost after refunds
+    pub net_cost: Amount,
 
-    /// Clearing price (set when auction ends)
-    pub clearing_price: Option<Amount>,
-}
+    /// Number of accepted bids
+    pub accepted_bids: u64,
 
-/// Status of a user's bid
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, async_graphql::Enum)]
-pub enum BidStatus {
-    /// Bid submitted, waiting for auction response
-    Pending,
-    /// Bid accepted by auction
-    Accepted,
-    /// Bid rejected by auction
-    Rejected,
+    /// Number of rejected bids
+    pub rejected_bids: u64,
 }
 
 #[cfg(test)]
@@ -209,7 +211,9 @@ mod tests {
     #[test]
     fn test_participant_info_serialization() {
         let info = ParticipantInfo {
-            quantity: 100,
+            total_quantity: 100,
+            total_paid: Amount::from_tokens(1000),
+            has_claimed: false,
             bid_timestamp: Timestamp::from(5000000),
         };
 
@@ -217,19 +221,25 @@ mod tests {
         let deserialized: ParticipantInfo =
             serde_json::from_str(&json).expect("Deserialization failed");
 
-        assert_eq!(deserialized.quantity, info.quantity);
+        assert_eq!(deserialized.total_quantity, info.total_quantity);
+        assert_eq!(deserialized.total_paid, info.total_paid);
+        assert_eq!(deserialized.has_claimed, info.has_claimed);
         assert_eq!(deserialized.bid_timestamp, info.bid_timestamp);
     }
 
     #[test]
     fn test_participant_info_clone() {
         let info = ParticipantInfo {
-            quantity: 200,
+            total_quantity: 200,
+            total_paid: Amount::from_tokens(2000),
+            has_claimed: false,
             bid_timestamp: Timestamp::from(6000000),
         };
 
         let cloned = info.clone();
-        assert_eq!(cloned.quantity, info.quantity);
+        assert_eq!(cloned.total_quantity, info.total_quantity);
+        assert_eq!(cloned.total_paid, info.total_paid);
+        assert_eq!(cloned.has_claimed, info.has_claimed);
         assert_eq!(cloned.bid_timestamp, info.bid_timestamp);
     }
 }

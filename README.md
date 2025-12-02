@@ -16,6 +16,20 @@ This is a stage-by-stage approach to implementing the Fairdrop smart contract on
 
 ---
 
+
+## Architecture Evolution
+
+### Initial Implementation Issue
+
+**Problem with Two-Way Messaging**: The initial implementation used return messages (`BidAccepted`/`BidRejected`) sent back to bidder chains. These messages could sit in inboxes indefinitely if bidders didn't process them, causing stale bid status.
+
+**Solution**: Redesigned to use **one-way messaging + event subscription**:
+- Bidders send messages to creator chain (PlaceBid, Claim)
+- Creator chain emits events to all subscribers (BidAccepted, BidRejected, ClaimProcessed)
+- Events are automatically processed via `process_streams` - no inbox dependency
+- Bid data indexed by owner for O(1) lookup
+
+
 ## Implementation Stages
 
 ### STAGE 1: Basic Auction MVP
