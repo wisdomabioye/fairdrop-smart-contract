@@ -20,6 +20,7 @@ Step 1 implements the core auction mechanism without external dependencies:
 
 - **Owner**: The account that created the auction
 - **Start Timestamp**: When the auction begins (allows scheduling future auctions)
+- **End Timestamp**: When the auction ends
 - **Start Price**: Initial price per unit
 - **Floor Price**: Minimum price (price won't go below this)
 - **Decrement Rate**: Amount to reduce price per interval
