@@ -16,6 +16,18 @@ Step 1 implements the core auction mechanism without external dependencies:
 
 ## Features
 
+### Initial Implementation Issue (This branch only)
+
+**Problem with Two-Way Messaging**: The initial implementation used return messages (`BidAccepted`/`BidRejected`) sent back to bidder chains. These messages could sit in inboxes indefinitely if bidders didn't process them, causing stale bid status.
+
+**Solution**: Redesigned to use **one-way messaging + event subscription**:
+- Bidders send messages to creator chain (PlaceBid, Claim)
+- Creator chain emits events to all subscribers (BidAccepted, BidRejected, ClaimProcessed)
+- Events are automatically processed via `process_streams` - no inbox dependency
+- Bid data indexed by owner for O(1) lookup
+
+
+
 ### Auction Parameters
 
 - **Owner**: The account that created the auction
