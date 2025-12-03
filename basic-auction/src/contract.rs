@@ -227,9 +227,15 @@ impl Contract for FairdropContract {
                 // Validate auction timing
                 let current_time = self.runtime.system_time();
                 let start_time = self.parameters().start_timestamp;
+                let end_time = self.parameters().end_timestamp;
 
                 if current_time < start_time {
                     self.emit_rejection(bidder, quantity, "Auction has not started yet");
+                    return;
+                }
+
+                if current_time >= end_time {
+                    self.emit_rejection(bidder, quantity, "Auction has ended");
                     return;
                 }
 
@@ -445,11 +451,24 @@ impl Contract for FairdropContract {
                             .expect("Failed to read bids")
                             .unwrap_or_default();
 
-                        bids.push(bid_info);
+                        bids.push(bid_info.clone());
 
                         self.state.bids_by_owner
                             .insert(&bidder, bids)
                             .expect("Failed to store bid");
+
+                        // Store bid in chronological log (dual storage)
+                        let bid_with_owner = state::BidInfoWithOwner {
+                            bidder,
+                            quantity: bid_info.quantity,
+                            bid_price: bid_info.bid_price,
+                            timestamp: bid_info.timestamp,
+                            status: bid_info.status,
+                            clearing_price: bid_info.clearing_price,
+                        };
+
+                        self.state.all_bids
+                            .push(bid_with_owner);
                     }
 
                     AuctionEvent::BidRejected {
@@ -474,11 +493,24 @@ impl Contract for FairdropContract {
                             .expect("Failed to read bids")
                             .unwrap_or_default();
 
-                        bids.push(bid_info);
+                        bids.push(bid_info.clone());
 
                         self.state.bids_by_owner
                             .insert(&bidder, bids)
                             .expect("Failed to store bid");
+
+                        // Store bid in chronological log (dual storage)
+                        let bid_with_owner = state::BidInfoWithOwner {
+                            bidder,
+                            quantity: bid_info.quantity,
+                            bid_price: bid_info.bid_price,
+                            timestamp: bid_info.timestamp,
+                            status: bid_info.status,
+                            clearing_price: bid_info.clearing_price,
+                        };
+
+                        self.state.all_bids
+                            .push(bid_with_owner);
                     }
 
                     AuctionEvent::ClaimProcessed { .. } => {

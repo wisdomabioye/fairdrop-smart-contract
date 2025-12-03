@@ -4,7 +4,7 @@
 use async_graphql::SimpleObject;
 use linera_sdk::{
     linera_base_types::{AccountOwner, Amount, Timestamp},
-    views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
+    views::{linera_views, LogView, MapView, RegisterView, RootView, ViewStorageContext},
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +64,11 @@ pub struct AuctionState {
     /// Maps AccountOwner to all their bids (accepts + rejects)
     pub bids_by_owner: MapView<AccountOwner, Vec<BidInfo>>,
 
+    /// Chronological storage of all bids for history queries
+    /// Bids are stored in insertion order (chronological)
+    /// Enables efficient pagination and filtering
+    pub all_bids: LogView<BidInfoWithOwner>,
+
     // Future: Counter for created applications (auto-incrementing)
     // pub created_applications_counter: RegisterView<u64>,
 
@@ -74,6 +79,28 @@ pub struct AuctionState {
 /// Information about a single bid (stored in bids_by_owner)
 #[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
 pub struct BidInfo {
+    /// Quantity of units bid for
+    pub quantity: u64,
+
+    /// Price when bid was placed
+    pub bid_price: Amount,
+
+    /// Timestamp when bid was placed
+    pub timestamp: Timestamp,
+
+    /// Status of this bid
+    pub status: BidStatus,
+
+    /// Clearing price (set when auction ends)
+    pub clearing_price: Option<Amount>,
+}
+
+/// Information about a single bid with owner (stored in all_bids log)
+#[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
+pub struct BidInfoWithOwner {
+    /// The bidder's account
+    pub bidder: AccountOwner,
+
     /// Quantity of units bid for
     pub quantity: u64,
 
@@ -165,6 +192,19 @@ pub struct BidderSummary {
 
     /// Number of rejected bids
     pub rejected_bids: u64,
+}
+
+/// Response for paginated bid queries
+#[derive(Clone, Debug, Deserialize, Serialize, SimpleObject)]
+pub struct BidHistoryResponse {
+    /// The bids in the requested range
+    pub bids: Vec<BidInfoWithOwner>,
+
+    /// Total number of bids matching the filters
+    pub total_count: usize,
+
+    /// Whether there are more bids after this page
+    pub has_more: bool,
 }
 
 #[cfg(test)]
