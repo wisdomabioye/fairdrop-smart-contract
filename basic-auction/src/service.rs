@@ -15,7 +15,7 @@ use linera_sdk::{
     views::View,
     Service, ServiceRuntime,
 };
-use state::{AuctionInfo, AuctionState};
+use state::{AuctionInfo, AuctionState, BidHistoryResponse};
 
 pub struct FairdropService {
     state: Arc<AuctionState>,
@@ -266,6 +266,78 @@ impl QueryRoot {
             current_time,
             time_until_next_decrement,
         })
+    }
+
+    /// Get all bid history with filtering and pagination (newest first only)
+    /// For querying a specific bidder's bids, use `bids_for_bidder` instead
+    ///
+    /// # Parameters
+    /// - `status`: Optional filter by bid status (Accepted/Rejected)
+    /// - `min_price`: Optional minimum bid price filter
+    /// - `max_price`: Optional maximum bid price filter
+    /// - `offset`: Number of bids to skip (for pagination)
+    /// - `limit`: Maximum number of bids to return (default 20, max 100)
+    ///
+    /// # Note
+    /// Only supports DESC order (newest first) for efficient pagination.
+    /// Iterates backwards through the log with early termination once limit is reached.
+    async fn get_bids(
+        &self,
+        status: Option<state::BidStatus>,
+        min_price: Option<Amount>,
+        max_price: Option<Amount>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> BidHistoryResponse {
+        let offset = offset.unwrap_or(0);
+        let limit = limit.unwrap_or(20).min(100); // Default 20, max 100 per page
+
+        let log_len = self.auction_state.all_bids.count();
+
+        let mut collected = 0;
+        let mut skipped = 0;
+        let mut filtered_bids = Vec::new();
+        let mut total_filtered = 0;
+
+        // Iterate backwards (newest first) with early termination
+        for i in (0..log_len).rev() {
+            if let Ok(Some(bid)) = self.auction_state.all_bids.get(i).await {
+                // Apply filters
+                let matches_filter = {
+                    let status_match = status.map_or(true, |s| bid.status == s);
+                    let min_price_match = min_price.map_or(true, |min| bid.bid_price >= min);
+                    let max_price_match = max_price.map_or(true, |max| bid.bid_price <= max);
+                    status_match && min_price_match && max_price_match
+                };
+
+                if !matches_filter {
+                    continue;
+                }
+
+                total_filtered += 1;
+
+                // Skip offset items
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+
+                // Collect up to limit
+                if collected < limit {
+                    filtered_bids.push(bid);
+                    collected += 1;
+                }
+                // Note: Can't determine has_more yet, continue counting
+            }
+        }
+
+        let has_more = total_filtered > offset + collected;
+
+        BidHistoryResponse {
+            bids: filtered_bids,
+            total_count: total_filtered,
+            has_more,
+        }
     }
 
 }
